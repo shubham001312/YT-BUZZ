@@ -1,13 +1,47 @@
+import os
 import re
 import uuid
 import shutil
+import asyncio
+import logging
 import yt_dlp
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-app = FastAPI(title="YT Buzz Downloader")
+logger = logging.getLogger("keepalive")
+
+# ── Keep-Alive Background Task ────────────────────────────
+async def keep_alive():
+    """Ping self every 10 minutes to prevent Render free-tier spin-down."""
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not render_url:
+        return  # Skip keep-alive on local dev
+    try:
+        import httpx
+    except ImportError:
+        print("[keepalive] httpx not installed — keep-alive disabled")
+        return
+    while True:
+        await asyncio.sleep(600)  # 10 minutes
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{render_url}/health")
+                print(f"[keepalive] ping: {resp.status_code}")
+        except Exception as e:
+            print(f"[keepalive] ping failed: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start keep-alive background task on startup
+    task = asyncio.create_task(keep_alive())
+    yield
+    # Cancel on shutdown
+    task.cancel()
+
+app = FastAPI(title="YT Buzz Downloader", lifespan=lifespan)
 
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
@@ -99,6 +133,12 @@ def _clean_formats(formats: list[dict]) -> list[dict]:
     # Sort: video by quality desc, audio by bitrate desc
     cleaned.sort(key=lambda x: (x["is_video"], x["quality"] or x["tbr"] or 0), reverse=True)
     return cleaned
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint for keep-alive pings and Render health checks."""
+    return JSONResponse({"status": "ok", "service": "yt-buzz"})
 
 
 @app.get("/", response_class=HTMLResponse)
