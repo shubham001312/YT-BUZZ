@@ -114,34 +114,6 @@
         <!-- Error Message -->
         <div id="errorMsg" class="error-msg" hidden></div>
 
-        <!-- Paste Cookies Modal (for age-restricted videos) -->
-        <div id="cookiesModal" class="cookies-modal" hidden>
-            <div class="cookies-modal-inner">
-                <div class="cookies-modal-header">
-                    <h3>Unlock Age-Restricted Video</h3>
-                    <button id="closeCookiesModal" class="cookies-modal-close">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                    </button>
-                </div>
-                <p class="cookies-modal-desc">This video requires YouTube login. Paste your <strong>cookies.txt</strong> content below to unlock it.</p>
-                <div class="cookies-modal-howto">
-                    <strong>How to get cookies.txt:</strong>
-                    <ol>
-                        <li>Install the <a href="https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="blank">Get cookies.txt LOCALLY</a> extension</li>
-                        <li>Go to <a href="https://youtube.com" target="blank">YouTube</a> while logged in</li>
-                        <li>Click the extension icon &rarr; "Export"</li>
-                        <li>Copy the text and paste it below</li>
-                    </ol>
-                </div>
-                <textarea id="cookiesTextarea" class="cookies-textarea" placeholder="# Netscape HTTP Cookie File
-.youtube.com	TRUE	/	TRUE	0	SID	..." rows="8"></textarea>
-                <div class="cookies-modal-actions">
-                    <button id="saveCookiesBtn" class="btn btn-primary">Save &amp; Retry</button>
-                    <button id="cancelCookiesBtn" class="btn btn-secondary">Cancel</button>
-                </div>
-            </div>
-        </div>
-
         <!-- Skeleton Loading -->
         <div id="skeletonSection" class="skeleton-section" hidden>
             <div class="skeleton-card">

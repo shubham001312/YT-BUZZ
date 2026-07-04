@@ -7,7 +7,7 @@ import asyncio
 import yt_dlp
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 try:
@@ -51,27 +51,19 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 # The server randomly picks one for each request to distribute load
 COOKIES_DIR = Path("cookies")
 COOKIES_DIR.mkdir(exist_ok=True)
-COOKIES_FILE = os.environ.get("COOKIES_FILE", "")  # Legacy env var support
+COOKIES_FILE = os.environ.get("COOKIES_FILE", "")
 
 def _get_cookies_path() -> str | None:
-    """Return a cookies file path.
+    """Return a cookies file path from the server's preset cookies directory.
     
-    Priority:
-    1. COOKIES_FILE env var (if set)
-    2. User-pasted cookies (cookies/pasted_cookies.txt) — most recent
-    3. Random pick from other cookies/*.txt files
+    Place cookies.txt files in the cookies/ directory on the server.
+    The server randomly picks one for each request to distribute load.
     """
     if COOKIES_FILE and Path(COOKIES_FILE).exists():
         return COOKIES_FILE
-    # Prefer user-pasted cookies (most likely to be fresh)
-    pasted = COOKIES_DIR / "pasted_cookies.txt"
-    if pasted.exists():
-        return str(pasted)
-    # Find all .txt files in cookies/ directory (excluding pasted_cookies.txt)
-    cookie_files = [f for f in COOKIES_DIR.glob("*.txt") if f.name != "pasted_cookies.txt"]
+    cookie_files = list(COOKIES_DIR.glob("*.txt"))
     if not cookie_files:
         return None
-    # Randomly pick one to distribute load across accounts
     chosen = random.choice(cookie_files)
     return str(chosen)
 
@@ -182,48 +174,6 @@ async def health():
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return FileResponse("static/index.html")
-
-
-@app.get("/api/cookies")
-async def cookies_status():
-    """Check if cookies file is uploaded."""
-    path = _get_cookies_path()
-    return JSONResponse({"has_cookies": path is not None, "path": path or ""})
-
-
-@app.post("/api/paste-cookies")
-async def receive_pasted_cookies(request: Request):
-    """Accept Netscape-format cookie text pasted by the user in the browser.
-    
-    No extension needed — user just pastes their cookies.txt content
-    into a textarea on the site and clicks Save.
-    """
-    body = await request.body()
-    text = body.decode("utf-8", errors="ignore")
-
-    # Validate: must contain YouTube cookies
-    if "youtube.com" not in text and ".youtube.com" not in text:
-        raise HTTPException(status_code=400, detail="No YouTube cookies found. Please paste the content of your cookies.txt file.")
-
-    # Validate: must be Netscape format
-    if "# Netscape" not in text and not text.startswith(".") and not text.startswith("youtube"):
-        raise HTTPException(status_code=400, detail="Invalid cookie format. Expected Netscape HTTP Cookie File format.")
-
-    # Count cookies for response
-    cookie_lines = [l for l in text.splitlines() if l.strip() and not l.startswith("#") and len(l.split("\t")) >= 7]
-
-    if len(cookie_lines) == 0:
-        raise HTTPException(status_code=400, detail="No valid cookie entries found.")
-
-    # Save to a dedicated file
-    dest = COOKIES_DIR / "pasted_cookies.txt"
-    dest.write_text(text, encoding="utf-8")
-
-    return JSONResponse({
-        "status": "ok",
-        "message": f"Cookies saved ({len(cookie_lines)} entries). Age-restricted videos should now work.",
-        "cookie_count": len(cookie_lines),
-    })
 
 
 @app.get("/api/info")
@@ -387,7 +337,7 @@ async def video_info(url: str):
     if "Video unavailable" in error_msg or "Private video" in error_msg:
         error_msg = "This video is unavailable, private, or has been removed."
     elif "Sign in" in error_msg or "confirm your age" in error_msg or "age" in error_msg.lower():
-        error_msg = "age_restricted"
+        error_msg = "This video is age-restricted and requires YouTube login to access."
     elif "Signature extraction failed" in error_msg:
         error_msg = "This video uses a protection that yt-dlp cannot currently bypass."
     else:
