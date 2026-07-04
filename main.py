@@ -275,7 +275,7 @@ async def video_info(url: str):
                 pass
 
     # Layer 3: Try Invidious proxy as last resort
-    video_id_match = re.search(r'(?:v=|youtu\.be/)([\w-]+)', url)
+    video_id_match = re.search(r'(?:v=|youtu\.be/|shorts/)([\w-]+)', url)
     if video_id_match and httpx:
         video_id = video_id_match.group(1)
         invidious_instances = [
