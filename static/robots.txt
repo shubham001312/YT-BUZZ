@@ -4,4 +4,4 @@ Disallow: /api/
 Disallow: /downloads/
 Disallow: /health
 
-Sitemap: /static/sitemap.xml
+Sitemap: https://yt-buzz.onrender.com/static/sitemap.xml
