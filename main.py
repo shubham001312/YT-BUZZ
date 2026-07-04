@@ -191,7 +191,9 @@ async def video_info(url: str):
     url = _clean_url(url)
     last_error = None
 
-    # Layer 1: Try multiple player clients
+    # Layer 1: Try multiple player clients WITHOUT cookies
+    # Important: Adding cookies triggers YouTube's SABR streaming + PO Token
+    # requirements, which breaks format extraction. Only use cookies as last resort.
     for clients in PLAYER_CLIENTS:
         try:
             ydl_opts = {
@@ -200,9 +202,6 @@ async def video_info(url: str):
                 "skip_download": True,
                 "extractor_args": {"youtube": {"player_client": clients}},
             }
-            cookies_path = _get_cookies_path()
-            if cookies_path:
-                ydl_opts["cookiefile"] = cookies_path
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
@@ -222,33 +221,37 @@ async def video_info(url: str):
             last_error = e
             continue
 
-    # Layer 2: Try with cookies if age-restricted or any error
+    # Layer 2: Try with cookies + android client (avoids SABR/PO Token issue)
+    # Only use cookies here for age-restricted content. Android client is less
+    # likely to trigger YouTube's SABR streaming compared to web client.
     if last_error is not None:
         cookies_path = _get_cookies_path()
         if cookies_path:
-            try:
-                ydl_opts = {
-                    "quiet": True,
-                    "no_warnings": True,
-                    "skip_download": True,
-                    "extractor_args": {"youtube": {"player_client": ["web"]}},
-                    "cookiefile": cookies_path,
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                formats = _clean_formats(info.get("formats", []))
-                return {
-                    "title": info.get("title", "Unknown"),
-                    "thumbnail": info.get("thumbnail", ""),
-                    "duration": info.get("duration", 0),
-                    "uploader": info.get("uploader", "Unknown"),
-                    "view_count": info.get("view_count", 0),
-                    "upload_date": info.get("upload_date", ""),
-                    "description": (info.get("description", "") or "")[:300],
-                    "formats": formats,
-                }
-            except Exception:
-                pass
+            for clients in [["android"], ["android_vr"], ["ios"], ["tv_embedded"]]:
+                try:
+                    ydl_opts = {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "skip_download": True,
+                        "extractor_args": {"youtube": {"player_client": clients}},
+                        "cookiefile": cookies_path,
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                    formats = _clean_formats(info.get("formats", []))
+                    if formats:  # Only succeed if we actually got formats
+                        return {
+                            "title": info.get("title", "Unknown"),
+                            "thumbnail": info.get("thumbnail", ""),
+                            "duration": info.get("duration", 0),
+                            "uploader": info.get("uploader", "Unknown"),
+                            "view_count": info.get("view_count", 0),
+                            "upload_date": info.get("upload_date", ""),
+                            "description": (info.get("description", "") or "")[:300],
+                            "formats": formats,
+                        }
+                except Exception:
+                    continue
 
     # Layer 3: Try Invidious proxy as last resort
     video_id_match = re.search(r'(?:v=|youtu\.be/|shorts/)([\w-]+)', url)
@@ -390,9 +393,8 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
             "http_chunk_size": 1048576,  # 1MB chunks for better throughput
             "socket_timeout": 30,
         }
-        cookies_path = _get_cookies_path()
-        if cookies_path:
-            ydl_opts["cookiefile"] = cookies_path
+        # Don't use cookies by default — they trigger SABR/PO Token issues
+        # Cookies are only used in the fallback attempt below
 
         # Handle audio-only downloads
         if download_type == "audio" and ext == "mp3":
@@ -413,16 +415,36 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
                 f.unlink(missing_ok=True)
 
         if info is None:
+            # Fallback 1: try best format without cookies
             ydl_opts["format"] = "bestvideo+bestaudio/best"
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
-            except yt_dlp.utils.DownloadError as e:
-                shutil.rmtree(output_dir, ignore_errors=True)
-                error_msg = str(e)
-                if "Signature extraction failed" in error_msg:
-                    error_msg = "This video uses a protection that yt-dlp cannot currently bypass."
-                raise HTTPException(status_code=500, detail=f"Download failed: {error_msg}")
+            except yt_dlp.utils.DownloadError:
+                pass
+
+        # Fallback 2: try with cookies + android client (for age-restricted)
+        if info is None:
+            cookies_path = _get_cookies_path()
+            if cookies_path:
+                for clients in [["android"], ["android_vr"], ["ios"], ["tv_embedded"]]:
+                    try:
+                        for f in output_dir.iterdir():
+                            f.unlink(missing_ok=True)
+                        dl_opts = dict(ydl_opts)  # Fresh copy to avoid mutation
+                        dl_opts["format"] = "bestvideo+bestaudio/best"
+                        dl_opts["cookiefile"] = cookies_path
+                        dl_opts["extractor_args"] = {"youtube": {"player_client": clients}}
+                        with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                            info = ydl.extract_info(url, download=True)
+                        if info:
+                            break
+                    except Exception:
+                        continue
+
+        if info is None:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail="Download failed: unable to fetch video with any method")
 
         # Find the downloaded file
         files = list(output_dir.iterdir())
