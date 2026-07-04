@@ -480,6 +480,54 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 
+@app.get("/api/download-invidious")
+async def download_invidious(url: str, video_id: str, itag: str, ext: str = "mp4", background_tasks: BackgroundTasks = None):
+    """Download video via Invidious proxy (fallback for age-restricted videos)."""
+    if not httpx:
+        raise HTTPException(status_code=500, detail="Invidious proxy not available (httpx not installed)")
+
+    invidious_instances = [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.privacyredirect.com",
+        "https://vid.puffyan.us",
+    ]
+
+    # Find working instance and download
+    for instance in invidious_instances:
+        try:
+            download_url = f"{instance}/latest_version?id={video_id}&itag={itag}"
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                resp = await client.get(download_url)
+                if resp.status_code == 200 and len(resp.content) > 1000:
+                    job_id = uuid.uuid4().hex[:12]
+                    out_path = DOWNLOAD_DIR / job_id
+                    out_path.mkdir(exist_ok=True)
+                    # Get filename from Content-Disposition or default
+                    disposition = resp.headers.get("content-disposition", "")
+                    filename = f"video.{ext}"
+                    match = re.search(r'filename\*?=utf-8\'\'([^;]+)', disposition)
+                    if match:
+                        filename = match[1]
+                    elif 'filename="' in disposition:
+                        match2 = re.search(r'filename="([^"]+)"', disposition)
+                        if match2:
+                            filename = match2[1]
+                    filepath = out_path / filename
+                    filepath.write_bytes(resp.content)
+                    safe_filename = re.sub(r'[/\\:*?"<>|]', '_', filename)
+                    background_tasks.add_task(_cleanup_dir, out_path)
+                    return FileResponse(
+                        path=str(filepath),
+                        filename=safe_filename,
+                        media_type="application/octet-stream",
+                    )
+        except Exception:
+            continue
+
+    raise HTTPException(status_code=500, detail="All Invidious instances failed. Try uploading cookies.txt or a different video.")
+
+
 @app.get("/api/playlist")
 async def playlist_info(url: str):
     """Fetch playlist metadata and all video entries."""
