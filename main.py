@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+import random
 import shutil
 import asyncio
 import yt_dlp
@@ -9,6 +10,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 # ── Keep-Alive Background Task ────────────────────────────
 async def keep_alive():
@@ -43,18 +48,31 @@ app = FastAPI(title="YT Buzz Downloader", lifespan=lifespan)
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# Cookies file for age-restricted videos (Netscape format)
+
+# Preset cookies for age-restricted videos (Netscape format)
+# Place multiple cookies.txt files in the cookies/ directory
+# The server randomly picks one for each request to distribute load
 COOKIES_DIR = Path("cookies")
 COOKIES_DIR.mkdir(exist_ok=True)
-COOKIES_FILE = os.environ.get("COOKIES_FILE", "")
+COOKIES_FILE = os.environ.get("COOKIES_FILE", "")  # Legacy env var support
+
 def _get_cookies_path() -> str | None:
-    """Return the active cookies file path (env var or uploaded)."""
+    """Return a randomly selected cookies file path.
+    
+    Priority:
+    1. COOKIES_FILE env var (if set)
+    2. Random pick from cookies/*.txt files
+    3. Uploaded cookies (legacy: cookies/youtube_cookies.txt)
+    """
     if COOKIES_FILE and Path(COOKIES_FILE).exists():
         return COOKIES_FILE
-    uploaded = COOKIES_DIR / "youtube_cookies.txt"
-    if uploaded.exists():
-        return str(uploaded)
-    return None
+    # Find all .txt files in cookies/ directory
+    cookie_files = list(COOKIES_DIR.glob("*.txt"))
+    if not cookie_files:
+        return None
+    # Randomly pick one to distribute load across accounts
+    chosen = random.choice(cookie_files)
+    return str(chosen)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -187,14 +205,20 @@ async def upload_cookies(file: UploadFile = File(...)):
 
 @app.get("/api/info")
 async def video_info(url: str):
-    """Fetch video metadata and available formats."""
+    """Fetch video metadata and available formats.
+    
+    Multi-layered bypass strategy:
+    1. Try player clients (web, web_creator, mweb, tv_embedded, android)
+    2. If age-restricted, try with preset cookies
+    3. If still failing, try Invidious proxy as last resort
+    """
     if not url or not YOUTUBE_RE.search(url):
         raise HTTPException(status_code=400, detail="Invalid YouTube URL")
 
     url = _clean_url(url)
-
-    # Try multiple player clients to bypass restrictions
     last_error = None
+
+    # Layer 1: Try multiple player clients
     for clients in PLAYER_CLIENTS:
         try:
             ydl_opts = {
@@ -223,18 +247,127 @@ async def video_info(url: str):
             }
         except yt_dlp.utils.DownloadError as e:
             last_error = e
-            continue  # Try next player client
+            error_str = str(e).lower()
+            continue
 
-    # All clients failed
-    error_msg = str(last_error)
+    # Layer 2: Try with cookies if age-restricted or any error
+    if last_error is not None:
+        cookies_path = _get_cookies_path()
+        if cookies_path:
+            try:
+                ydl_opts = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "extractor_args": {"youtube": {"player_client": ["web"]}},
+                    "cookiefile": cookies_path,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                formats = _clean_formats(info.get("formats", []))
+                return {
+                    "title": info.get("title", "Unknown"),
+                    "thumbnail": info.get("thumbnail", ""),
+                    "duration": info.get("duration", 0),
+                    "uploader": info.get("uploader", "Unknown"),
+                    "view_count": info.get("view_count", 0),
+                    "upload_date": info.get("upload_date", ""),
+                    "description": (info.get("description", "") or "")[:300],
+                    "formats": formats,
+                }
+            except Exception:
+                pass
+
+    # Layer 3: Try Invidious proxy as last resort
+    video_id_match = re.search(r'(?:v=|youtu\.be/)([\w-]+)', url)
+    if video_id_match and httpx:
+        video_id = video_id_match.group(1)
+        invidious_instances = [
+            "https://inv.nadeko.net",
+            "https://invidious.nerdvpn.de",
+            "https://invidious.privacyredirect.com",
+            "https://vid.puffyan.us",
+        ]
+        for instance in invidious_instances:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.get(f"{instance}/api/v1/videos/{video_id}")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        formats = []
+                        seen = set()
+                        for f in data.get("formatStreams", []):
+                            label = f.get("resolution", "Unknown")
+                            key = f"{label}_{f.get('container', 'mp4')}"
+                            if key not in seen:
+                                seen.add(key)
+                                try:
+                                    quality = int(re.sub(r'[^0-9]', '', label) or 0)
+                                except ValueError:
+                                    quality = 0
+                                formats.append({
+                                    "format_id": f.get("itag", ""),
+                                    "ext": f.get("container", "mp4"),
+                                    "label": label,
+                                    "quality": quality,
+                                    "filesize": "Unknown",
+                                    "filesize_bytes": 0,
+                                    "is_video": True,
+                                    "is_audio": False,
+                                    "vcodec": None,
+                                    "acodec": None,
+                                    "fps": None,
+                                    "tbr": None,
+                                })
+                        for f in data.get("adaptiveFormats", []):
+                            is_vid = "video" in f.get("type", "")
+                            is_aud = "audio" in f.get("type", "")
+                            label = f.get("resolution", "Audio") if is_vid else f"Audio {f.get('bitrate', '')}kbps"
+                            key = f"{label}_{f.get('container', 'mp4')}"
+                            if key not in seen:
+                                seen.add(key)
+                                try:
+                                    quality = int(re.sub(r'[^0-9]', '', f.get("resolution", "") or "") or 0)
+                                except ValueError:
+                                    quality = 0
+                                formats.append({
+                                    "format_id": f.get("itag", ""),
+                                    "ext": f.get("container", "mp4"),
+                                    "label": label,
+                                    "quality": quality,
+                                    "filesize": "Unknown",
+                                    "filesize_bytes": 0,
+                                    "is_video": is_vid,
+                                    "is_audio": is_aud,
+                                    "vcodec": None,
+                                    "acodec": None,
+                                    "fps": None,
+                                    "tbr": f.get("bitrate"),
+                                })
+                        formats.sort(key=lambda x: (x["is_video"], x["quality"]), reverse=True)
+                        return {
+                            "title": data.get("title", "Unknown"),
+                            "thumbnail": data.get("thumbnail", ""),
+                            "duration": data.get("lengthSeconds", 0),
+                            "uploader": data.get("author", "Unknown"),
+                            "view_count": data.get("viewCount", 0),
+                            "upload_date": "",
+                            "description": (data.get("description", "") or "")[:300],
+                            "formats": formats,
+                        }
+            except Exception:
+                continue
+
+    # All layers failed
+    error_msg = str(last_error or "Unknown error")
     if "Video unavailable" in error_msg or "Private video" in error_msg:
         error_msg = "This video is unavailable, private, or has been removed."
-    elif "Sign in" in error_msg or "confirm your age" in error_msg:
-        error_msg = "This video is age-restricted. Try a different video."
+    elif "Sign in" in error_msg or "confirm your age" in error_msg or "age" in error_msg.lower():
+        error_msg = "This video is age-restricted. Upload cookies.txt or try a different video."
     elif "Signature extraction failed" in error_msg:
         error_msg = "This video uses a protection that yt-dlp cannot currently bypass."
     else:
-        error_msg = error_msg[:200]  # Truncate long error messages
+        error_msg = error_msg[:200]
     raise HTTPException(status_code=400, detail=f"Could not fetch video info: {error_msg}")
 
 
