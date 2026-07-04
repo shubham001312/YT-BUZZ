@@ -350,6 +350,8 @@ async def video_info(url: str):
                             "upload_date": "",
                             "description": (data.get("description", "") or "")[:300],
                             "formats": formats,
+                            "source": "invidious",
+                            "video_id": video_id,
                         }
             except Exception:
                 continue

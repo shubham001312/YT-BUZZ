@@ -28,6 +28,8 @@ let currentTab = "video";
 let playlistVideos = [];
 let playlistCancelled = false;
 let currentVideoId = null;
+let videoSource = "";  // "youtube" or "invidious"
+let invidiousVideoId = "";
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -139,6 +141,8 @@ async function fetchInfo() {
 
     // Store formats
     allFormats = data.formats || [];
+    videoSource = data.source || "";
+    invidiousVideoId = data.video_id || "";
     currentTab = "video";
     setActiveTab("video");
     renderFormats("video");
@@ -370,7 +374,7 @@ function renderFormats(tab) {
   formatList.innerHTML = filtered
     .map(
       (f) => `
-      <div class="format-item" data-id="${f.format_id}" data-ext="${f.ext}" data-type="${f.is_audio ? 'audio' : 'video'}" data-label="${escapeHtml(f.label)}">
+      <div class="format-item" data-id="${f.format_id}" data-ext="${f.ext}" data-type="${f.is_audio ? 'audio' : 'video'}" data-label="${escapeHtml(f.label)}" data-source="${videoSource || 'youtube'}" data-video-id="${invidiousVideoId || ''}">
         <div class="format-left">
           <span class="format-badge ${f.is_audio ? "audio-badge" : ""}">${f.is_audio ? "Audio" : "Video"}</span>
           <div>
@@ -416,9 +420,14 @@ function formatSize(bytes) {
 // ── Download with Progress ──────────────────────────────
 let activeDownload = null;
 
-function downloadFormat(formatId, ext, type, label) {
-  const url = urlInput.value.trim();
-  const downloadUrl = `/api/download?url=${encodeURIComponent(url)}&format_id=${encodeURIComponent(formatId)}&ext=${encodeURIComponent(ext)}&download_type=${encodeURIComponent(type)}`;
+function downloadFormat(formatId, ext, type, label, source, videoId) {
+  let downloadUrl;
+  if (source === "invidious" && videoId) {
+    downloadUrl = `/api/download-invidious?video_id=${encodeURIComponent(videoId)}&itag=${encodeURIComponent(formatId)}&ext=${encodeURIComponent(ext)}`;
+  } else {
+    const url = urlInput.value.trim();
+    downloadUrl = `/api/download?url=${encodeURIComponent(url)}&format_id=${encodeURIComponent(formatId)}&ext=${encodeURIComponent(ext)}&download_type=${encodeURIComponent(type)}`;
+  }
 
   showDownloadOverlay(label, ext, downloadUrl);
 }
@@ -644,5 +653,5 @@ formatList.addEventListener("click", (e) => {
   item.style.transform = "scale(0.98)";
   setTimeout(() => { item.style.transform = ""; }, 150);
 
-  downloadFormat(item.dataset.id, item.dataset.ext, item.dataset.type, item.dataset.label);
+  downloadFormat(item.dataset.id, item.dataset.ext, item.dataset.type, item.dataset.label, item.dataset.source, item.dataset.videoId);
 });
