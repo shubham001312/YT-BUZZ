@@ -43,10 +43,22 @@ app = FastAPI(title="YT Buzz Downloader", lifespan=lifespan)
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+# Optional cookies file for age-restricted videos (Netscape format)
+COOKIES_FILE = os.environ.get("COOKIES_FILE", "")
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 YOUTUBE_RE = re.compile(r'(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)')
+
+# Player clients to try in order for bypassing restrictions
+PLAYER_CLIENTS = [
+    ["web"],
+    ["web_creator"],
+    ["mweb"],
+    ["tv_embedded"],
+    ["android"],
+]
 
 def _clean_url(url: str) -> str:
     """Strip Mix/radio playlist params (list=RDM...) from URLs.
@@ -151,38 +163,48 @@ async def video_info(url: str):
 
     url = _clean_url(url)
 
-    try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+    # Try multiple player clients to bypass restrictions
+    last_error = None
+    for clients in PLAYER_CLIENTS:
+        try:
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "extractor_args": {"youtube": {"player_client": clients}},
+            }
+            if COOKIES_FILE and Path(COOKIES_FILE).exists():
+                ydl_opts["cookiefile"] = COOKIES_FILE
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
 
-        formats = _clean_formats(info.get("formats", []))
+            formats = _clean_formats(info.get("formats", []))
 
-        return {
-            "title": info.get("title", "Unknown"),
-            "thumbnail": info.get("thumbnail", ""),
-            "duration": info.get("duration", 0),
-            "uploader": info.get("uploader", "Unknown"),
-            "view_count": info.get("view_count", 0),
-            "upload_date": info.get("upload_date", ""),
-            "description": (info.get("description", "") or "")[:300],
-            "formats": formats,
-        }
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
-        if "Requested format is not available" in error_msg or "Signature extraction failed" in error_msg:
-            error_msg = "This video uses a protection that yt-dlp cannot currently bypass. Try a different video."
-        elif "Video unavailable" in error_msg or "Private video" in error_msg:
-            error_msg = "This video is unavailable, private, or has been removed."
-        elif "Sign in" in error_msg or "confirm your age" in error_msg:
-            error_msg = "This video is age-restricted and cannot be downloaded."
-        raise HTTPException(status_code=400, detail=f"Could not fetch video info: {error_msg}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+            return {
+                "title": info.get("title", "Unknown"),
+                "thumbnail": info.get("thumbnail", ""),
+                "duration": info.get("duration", 0),
+                "uploader": info.get("uploader", "Unknown"),
+                "view_count": info.get("view_count", 0),
+                "upload_date": info.get("upload_date", ""),
+                "description": (info.get("description", "") or "")[:300],
+                "formats": formats,
+            }
+        except yt_dlp.utils.DownloadError as e:
+            last_error = e
+            continue  # Try next player client
+
+    # All clients failed
+    error_msg = str(last_error)
+    if "Video unavailable" in error_msg or "Private video" in error_msg:
+        error_msg = "This video is unavailable, private, or has been removed."
+    elif "Sign in" in error_msg or "confirm your age" in error_msg:
+        error_msg = "This video is age-restricted. Try a different video."
+    elif "Signature extraction failed" in error_msg:
+        error_msg = "This video uses a protection that yt-dlp cannot currently bypass."
+    else:
+        error_msg = error_msg[:200]  # Truncate long error messages
+    raise HTTPException(status_code=400, detail=f"Could not fetch video info: {error_msg}")
 
 
 @app.get("/api/download")
@@ -224,11 +246,14 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
             "no_cache_dir": True,
             "merge_output_format": ext if ext != "mp3" else None,
             "postprocessors": [],
+            "extractor_args": {"youtube": {"player_client": ["web", "web_creator", "mweb"]}},
             # Speed optimizations
             "concurrent_fragment_downloads": 4,
             "http_chunk_size": 1048576,  # 1MB chunks for better throughput
             "socket_timeout": 30,
         }
+        if COOKIES_FILE and Path(COOKIES_FILE).exists():
+            ydl_opts["cookiefile"] = COOKIES_FILE
 
         # Handle audio-only downloads
         if download_type == "audio" and ext == "mp3":
