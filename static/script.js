@@ -622,8 +622,11 @@ cookiesFile.addEventListener("change", async (e) => {
     const res = await fetch("/api/upload-cookies", { method: "POST", body: formData });
     const data = await res.json();
     if (res.ok) {
-      showToast("Cookies uploaded! Try the video again.", "success");
+      showToast("Cookies uploaded! Retrying...", "success");
       cookiesBanner.hidden = true;
+      if (urlInput.value.trim()) {
+        fetchInfo();
+      }
     } else {
       showToast(data.detail || "Invalid cookies file", "error");
     }
