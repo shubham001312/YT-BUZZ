@@ -7,7 +7,7 @@ import asyncio
 import yt_dlp
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 try:
@@ -58,17 +58,17 @@ def _get_cookies_path() -> str | None:
     
     Priority:
     1. COOKIES_FILE env var (if set)
-    2. Extension-synced cookies (cookies/extension_cookies.txt) — most recent
+    2. User-pasted cookies (cookies/pasted_cookies.txt) — most recent
     3. Random pick from other cookies/*.txt files
     """
     if COOKIES_FILE and Path(COOKIES_FILE).exists():
         return COOKIES_FILE
-    # Prefer extension-synced cookies (most likely to be fresh)
-    ext_cookies = COOKIES_DIR / "extension_cookies.txt"
-    if ext_cookies.exists():
-        return str(ext_cookies)
-    # Find all .txt files in cookies/ directory (excluding extension_cookies.txt)
-    cookie_files = [f for f in COOKIES_DIR.glob("*.txt") if f.name != "extension_cookies.txt"]
+    # Prefer user-pasted cookies (most likely to be fresh)
+    pasted = COOKIES_DIR / "pasted_cookies.txt"
+    if pasted.exists():
+        return str(pasted)
+    # Find all .txt files in cookies/ directory (excluding pasted_cookies.txt)
+    cookie_files = [f for f in COOKIES_DIR.glob("*.txt") if f.name != "pasted_cookies.txt"]
     if not cookie_files:
         return None
     # Randomly pick one to distribute load across accounts
@@ -191,32 +191,19 @@ async def cookies_status():
     return JSONResponse({"has_cookies": path is not None, "path": path or ""})
 
 
-@app.post("/api/upload-cookies")
-async def upload_cookies(file: UploadFile = File(...)):
-    """Upload a Netscape-format cookies.txt file for age-restricted videos."""
-    content = await file.read()
-    text = content.decode("utf-8", errors="ignore")
-    # Basic validation — Netscape cookies start with # Netscape HTTP Cookie File
-    if "# Netscape" not in text and ".youtube.com" not in text and "youtube.com" not in text:
-        raise HTTPException(status_code=400, detail="Invalid cookies file. Please upload a Netscape-format cookies.txt exported from your browser.")
-    dest = COOKIES_DIR / "youtube_cookies.txt"
-    dest.write_text(text, encoding="utf-8")
-    return JSONResponse({"status": "ok", "message": "Cookies uploaded successfully. Age-restricted videos should now work."})
-
-
-@app.post("/api/extension-cookies")
-async def receive_extension_cookies(request: Request):
-    """Accept Netscape-format cookies from the YT Buzz browser extension.
+@app.post("/api/paste-cookies")
+async def receive_pasted_cookies(request: Request):
+    """Accept Netscape-format cookie text pasted by the user in the browser.
     
-    The extension extracts YouTube cookies from the user's browser and sends them
-    here. This allows age-restricted video downloads without manual file upload.
+    No extension needed — user just pastes their cookies.txt content
+    into a textarea on the site and clicks Save.
     """
     body = await request.body()
     text = body.decode("utf-8", errors="ignore")
 
     # Validate: must contain YouTube cookies
     if "youtube.com" not in text and ".youtube.com" not in text:
-        raise HTTPException(status_code=400, detail="No YouTube cookies found in the request.")
+        raise HTTPException(status_code=400, detail="No YouTube cookies found. Please paste the content of your cookies.txt file.")
 
     # Validate: must be Netscape format
     if "# Netscape" not in text and not text.startswith(".") and not text.startswith("youtube"):
@@ -228,13 +215,13 @@ async def receive_extension_cookies(request: Request):
     if len(cookie_lines) == 0:
         raise HTTPException(status_code=400, detail="No valid cookie entries found.")
 
-    # Save to a dedicated file for extension-synced cookies
-    dest = COOKIES_DIR / "extension_cookies.txt"
+    # Save to a dedicated file
+    dest = COOKIES_DIR / "pasted_cookies.txt"
     dest.write_text(text, encoding="utf-8")
 
     return JSONResponse({
         "status": "ok",
-        "message": f"Cookies synced from browser extension ({len(cookie_lines)} cookies). Age-restricted videos should now work.",
+        "message": f"Cookies saved ({len(cookie_lines)} entries). Age-restricted videos should now work.",
         "cookie_count": len(cookie_lines),
     })
 
@@ -400,7 +387,7 @@ async def video_info(url: str):
     if "Video unavailable" in error_msg or "Private video" in error_msg:
         error_msg = "This video is unavailable, private, or has been removed."
     elif "Sign in" in error_msg or "confirm your age" in error_msg or "age" in error_msg.lower():
-        error_msg = "This video is age-restricted. Upload cookies.txt or try a different video."
+        error_msg = "age_restricted"
     elif "Signature extraction failed" in error_msg:
         error_msg = "This video uses a protection that yt-dlp cannot currently bypass."
     else:
@@ -562,7 +549,7 @@ async def download_invidious(video_id: str, itag: str, ext: str = "mp4", backgro
         except Exception:
             continue
 
-    raise HTTPException(status_code=500, detail="All Invidious instances failed. Try uploading cookies.txt or a different video.")
+    raise HTTPException(status_code=500, detail="All Invidious instances failed. This video may be age-restricted. Try a different video.")
 
 
 @app.get("/api/playlist")

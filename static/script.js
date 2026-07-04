@@ -20,8 +20,7 @@ const queueStatus = document.getElementById("queueStatus");
 const queueCount = document.getElementById("queueCount");
 const queueBar = document.getElementById("queueBar");
 const skeletonSection = document.getElementById("skeletonSection");
-const cookiesBanner = document.getElementById("cookiesBanner");
-const cookiesFile = document.getElementById("cookiesFile");
+const cookiesModal = document.getElementById("cookiesModal");
 
 let allFormats = [];
 let currentTab = "video";
@@ -149,10 +148,12 @@ async function fetchInfo() {
 
     resultSection.hidden = false;
     resultSection.scrollIntoView({ behavior: "smooth", block: "start" });    } catch (err) {
-    showError(err.message);
-    // Show cookies banner for age-restricted errors
-    if (err.message.toLowerCase().includes("age-restricted")) {
-      cookiesBanner.hidden = false;
+    // Show paste cookies modal for age-restricted errors (skip error message)
+    if (err.message.includes("age_restricted") || err.message.toLowerCase().includes("age-restricted")) {
+      cookiesModal.hidden = false;
+      cookiesTextarea.focus();
+    } else {
+      showError(err.message);
     }
   } finally {
     setLoading(false);
@@ -621,52 +622,63 @@ formatTabs.addEventListener("click", (e) => {
   renderFormats(tab.dataset.tab);
 });
 
-// ── Cookie Upload (Manual) ──────────────────────────────
-cookiesFile.addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const formData = new FormData();
-  formData.append("file", file);
+// ── Paste Cookies Modal ──────────────────────────────────
+const cookiesTextarea = document.getElementById("cookiesTextarea");
+const saveCookiesBtn = document.getElementById("saveCookiesBtn");
+const cancelCookiesBtn = document.getElementById("cancelCookiesBtn");
+const closeCookiesModal = document.getElementById("closeCookiesModal");
+
+saveCookiesBtn.addEventListener("click", async () => {
+  const text = cookiesTextarea.value.trim();
+  if (!text) {
+    showToast("Please paste your cookies.txt content first.", "error");
+    return;
+  }
+  saveCookiesBtn.disabled = true;
+  saveCookiesBtn.textContent = "Saving...";
   try {
-    const res = await fetch("/api/upload-cookies", { method: "POST", body: formData });
+    const res = await fetch("/api/paste-cookies", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: text,
+    });
     const data = await res.json();
     if (res.ok) {
-      showToast("Cookies uploaded! Retrying...", "success");
-      cookiesBanner.hidden = true;
+      showToast("Cookies saved! Retrying download...", "success");
+      cookiesModal.hidden = true;
+      cookiesTextarea.value = "";
+      // Auto-retry fetching video info
       if (urlInput.value.trim()) {
         fetchInfo();
       }
     } else {
-      showToast(data.detail || "Invalid cookies file", "error");
+      showToast(data.detail || "Invalid cookies. Make sure you pasted Netscape format.", "error");
     }
   } catch (err) {
-    showToast("Upload failed: " + err.message, "error");
+    showToast("Failed to save cookies: " + err.message, "error");
   }
-  cookiesFile.value = "";
+  saveCookiesBtn.disabled = false;
+  saveCookiesBtn.textContent = "Save & Retry";
 });
 
-// ── Extension Install Modal ─────────────────────────────
-const extensionModal = document.getElementById("extensionModal");
-const extensionInstallBtn = document.getElementById("extensionInstallBtn");
-const closeModal = document.getElementById("closeModal");
-
-extensionInstallBtn.addEventListener("click", () => {
-  extensionModal.hidden = false;
+cancelCookiesBtn.addEventListener("click", () => {
+  cookiesModal.hidden = true;
+  cookiesTextarea.value = "";
 });
 
-closeModal.addEventListener("click", () => {
-  extensionModal.hidden = true;
+closeCookiesModal.addEventListener("click", () => {
+  cookiesModal.hidden = true;
 });
 
-extensionModal.addEventListener("click", (e) => {
-  if (e.target === extensionModal) {
-    extensionModal.hidden = true;
+cookiesModal.addEventListener("click", (e) => {
+  if (e.target === cookiesModal) {
+    cookiesModal.hidden = true;
   }
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !extensionModal.hidden) {
-    extensionModal.hidden = true;
+  if (e.key === "Escape" && !cookiesModal.hidden) {
+    cookiesModal.hidden = true;
   }
 });
 

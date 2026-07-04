@@ -176,72 +176,8 @@ body {
     animation: fadeIn 0.3s ease;
 }
 
-/* ===== Cookies Banner ===== */
-.cookies-banner {
-    background: #FFF7ED;
-    border: 1px solid #FDBA74;
-    border-radius: var(--radius-sm);
-    padding: 14px 16px;
-    margin-bottom: 20px;
-    animation: fadeIn 0.3s ease;
-}
-
-.cookies-content {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    font-size: 0.85rem;
-    color: #9A3412;
-    margin-bottom: 10px;
-}
-
-.cookies-content svg {
-    flex-shrink: 0;
-    color: #EA580C;
-    margin-top: 2px;
-}
-
-.cookies-text strong {
-    color: #7C2D12;
-}
-
-.cookies-actions {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.cookies-upload-btn {
-    background: #EA580C;
-    color: white;
-    padding: 7px 16px;
-    border-radius: 6px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background var(--transition);
-    white-space: nowrap;
-}
-
-.cookies-upload-btn:hover {
-    background: #C2410C;
-}
-
-.cookies-upload-alt {
-    font-size: 0.78rem;
-    color: #B45309;
-    cursor: pointer;
-    text-decoration: underline;
-    text-decoration-style: dotted;
-}
-
-.cookies-upload-alt:hover {
-    color: #92400E;
-}
-
-/* ===== Extension Modal ===== */
-.extension-modal {
+/* ===== Cookies Paste Modal ===== */
+.cookies-modal {
     position: fixed;
     top: 0;
     left: 0;
@@ -257,29 +193,29 @@ body {
     animation: fadeIn 0.2s ease;
 }
 
-.extension-modal-inner {
+.cookies-modal-inner {
     background: var(--surface);
     border-radius: var(--radius);
     padding: 28px;
-    max-width: 480px;
+    max-width: 520px;
     width: 100%;
     box-shadow: var(--shadow-lg);
     animation: modalIn 0.3s ease;
 }
 
-.extension-modal-header {
+.cookies-modal-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 20px;
+    margin-bottom: 12px;
 }
 
-.extension-modal-header h3 {
+.cookies-modal-header h3 {
     font-size: 1.1rem;
     font-weight: 700;
 }
 
-.extension-modal-close {
+.cookies-modal-close {
     background: none;
     border: none;
     cursor: pointer;
@@ -289,66 +225,97 @@ body {
     transition: all var(--transition);
 }
 
-.extension-modal-close:hover {
+.cookies-modal-close:hover {
     background: var(--surface-hover);
     color: var(--text);
 }
 
-.extension-modal-close svg {
+.cookies-modal-close svg {
     width: 20px;
     height: 20px;
 }
 
-.extension-steps {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
+.cookies-modal-desc {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
     margin-bottom: 16px;
 }
 
-.extension-step {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
+.cookies-modal-desc strong {
+    color: var(--text);
 }
 
-.extension-step-num {
-    width: 28px;
-    height: 28px;
-    background: var(--primary-light);
+.cookies-modal-howto {
+    background: #F9FAFB;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.cookies-modal-howto strong {
+    color: var(--text);
+    font-size: 0.85rem;
+}
+
+.cookies-modal-howto ol {
+    margin-top: 6px;
+    padding-left: 18px;
+}
+
+.cookies-modal-howto a {
     color: var(--primary);
-    border-radius: 50%;
+    text-decoration: none;
+}
+
+.cookies-modal-howto a:hover {
+    text-decoration: underline;
+}
+
+.cookies-textarea {
+    width: 100%;
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    padding: 12px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: #FAFAFA;
+    color: var(--text);
+    resize: vertical;
+    margin-bottom: 16px;
+    transition: border-color var(--transition);
+}
+
+.cookies-textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+.cookies-textarea::placeholder {
+    color: #bbb;
+}
+
+.cookies-modal-actions {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.8rem;
-    font-weight: 700;
-    flex-shrink: 0;
+    gap: 10px;
+    justify-content: flex-end;
 }
 
-.extension-step strong {
-    font-size: 0.88rem;
-}
-
-.extension-step-detail {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    line-height: 1.5;
-}
-
-.extension-step-detail code {
+.btn-secondary {
     background: var(--surface-hover);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 0.78rem;
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 10px 20px;
 }
 
-.extension-note {
-    font-size: 0.78rem;
-    color: var(--text-secondary);
-    text-align: center;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
+.btn-secondary:hover {
+    background: var(--border);
 }
 
 @keyframes modalIn {
