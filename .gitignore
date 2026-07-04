@@ -2,7 +2,9 @@ venv/
 __pycache__/
 *.pyc
 downloads/
-cookies/
+cookies/*.txt
+cookies/extension_cookies.txt
+cookies/pasted_cookies.txt
 server.log
 .env
 *.egg-info/
