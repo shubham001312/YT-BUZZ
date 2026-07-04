@@ -20,6 +20,8 @@ const queueStatus = document.getElementById("queueStatus");
 const queueCount = document.getElementById("queueCount");
 const queueBar = document.getElementById("queueBar");
 const skeletonSection = document.getElementById("skeletonSection");
+const cookiesBanner = document.getElementById("cookiesBanner");
+const cookiesFile = document.getElementById("cookiesFile");
 
 let allFormats = [];
 let currentTab = "video";
@@ -142,9 +144,12 @@ async function fetchInfo() {
     renderFormats("video");
 
     resultSection.hidden = false;
-    resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (err) {
+    resultSection.scrollIntoView({ behavior: "smooth", block: "start" });    } catch (err) {
     showError(err.message);
+    // Show cookies banner for age-restricted errors
+    if (err.message.toLowerCase().includes("age-restricted")) {
+      cookiesBanner.hidden = false;
+    }
   } finally {
     setLoading(false);
   }
@@ -605,6 +610,27 @@ formatTabs.addEventListener("click", (e) => {
   if (!tab) return;
   setActiveTab(tab.dataset.tab);
   renderFormats(tab.dataset.tab);
+});
+
+// ── Cookie Upload ──────────────────────────────────────
+cookiesFile.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const res = await fetch("/api/upload-cookies", { method: "POST", body: formData });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Cookies uploaded! Try the video again.", "success");
+      cookiesBanner.hidden = true;
+    } else {
+      showToast(data.detail || "Invalid cookies file", "error");
+    }
+  } catch (err) {
+    showToast("Upload failed: " + err.message, "error");
+  }
+  cookiesFile.value = "";
 });
 
 formatList.addEventListener("click", (e) => {

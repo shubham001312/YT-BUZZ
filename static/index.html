@@ -114,6 +114,16 @@
         <!-- Error Message -->
         <div id="errorMsg" class="error-msg" hidden></div>
 
+        <!-- Cookies Upload (for age-restricted videos) -->
+        <div id="cookiesBanner" class="cookies-banner" hidden>
+            <div class="cookies-content">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <span>Age-restricted video? Upload your YouTube <strong>cookies.txt</strong> file to unlock it.</span>
+                <label for="cookiesFile" class="cookies-upload-btn">Upload Cookies</label>
+                <input type="file" id="cookiesFile" accept=".txt" hidden>
+            </div>
+        </div>
+
         <!-- Skeleton Loading -->
         <div id="skeletonSection" class="skeleton-section" hidden>
             <div class="skeleton-card">

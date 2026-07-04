@@ -6,7 +6,7 @@ import asyncio
 import yt_dlp
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
@@ -43,8 +43,18 @@ app = FastAPI(title="YT Buzz Downloader", lifespan=lifespan)
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# Optional cookies file for age-restricted videos (Netscape format)
+# Cookies file for age-restricted videos (Netscape format)
+COOKIES_DIR = Path("cookies")
+COOKIES_DIR.mkdir(exist_ok=True)
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "")
+def _get_cookies_path() -> str | None:
+    """Return the active cookies file path (env var or uploaded)."""
+    if COOKIES_FILE and Path(COOKIES_FILE).exists():
+        return COOKIES_FILE
+    uploaded = COOKIES_DIR / "youtube_cookies.txt"
+    if uploaded.exists():
+        return str(uploaded)
+    return None
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -155,6 +165,26 @@ async def root():
     return FileResponse("static/index.html")
 
 
+@app.get("/api/cookies")
+async def cookies_status():
+    """Check if cookies file is uploaded."""
+    path = _get_cookies_path()
+    return JSONResponse({"has_cookies": path is not None, "path": path or ""})
+
+
+@app.post("/api/upload-cookies")
+async def upload_cookies(file: UploadFile = File(...)):
+    """Upload a Netscape-format cookies.txt file for age-restricted videos."""
+    content = await file.read()
+    text = content.decode("utf-8", errors="ignore")
+    # Basic validation — Netscape cookies start with # Netscape HTTP Cookie File
+    if "# Netscape" not in text and ".youtube.com" not in text and "youtube.com" not in text:
+        raise HTTPException(status_code=400, detail="Invalid cookies file. Please upload a Netscape-format cookies.txt exported from your browser.")
+    dest = COOKIES_DIR / "youtube_cookies.txt"
+    dest.write_text(text, encoding="utf-8")
+    return JSONResponse({"status": "ok", "message": "Cookies uploaded successfully. Age-restricted videos should now work."})
+
+
 @app.get("/api/info")
 async def video_info(url: str):
     """Fetch video metadata and available formats."""
@@ -173,8 +203,9 @@ async def video_info(url: str):
                 "skip_download": True,
                 "extractor_args": {"youtube": {"player_client": clients}},
             }
-            if COOKIES_FILE and Path(COOKIES_FILE).exists():
-                ydl_opts["cookiefile"] = COOKIES_FILE
+            cookies_path = _get_cookies_path()
+            if cookies_path:
+                ydl_opts["cookiefile"] = cookies_path
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
@@ -252,8 +283,9 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
             "http_chunk_size": 1048576,  # 1MB chunks for better throughput
             "socket_timeout": 30,
         }
-        if COOKIES_FILE and Path(COOKIES_FILE).exists():
-            ydl_opts["cookiefile"] = COOKIES_FILE
+        cookies_path = _get_cookies_path()
+        if cookies_path:
+            ydl_opts["cookiefile"] = cookies_path
 
         # Handle audio-only downloads
         if download_type == "audio" and ext == "mp3":
