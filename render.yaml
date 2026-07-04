@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: yt-buzz
+    runtime: docker
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+    healthCheckPath: /
+    autoDeploy: true

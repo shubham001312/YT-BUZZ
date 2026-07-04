@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YT Buzz — YouTube Downloader</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23FF0000'/><polygon points='38,22 78,50 38,78' fill='white'/></svg>">
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="#FF0000"/>
+                    <path d="M10 8.5l5 3.5-5 3.5V8.5z" fill="white"/>
+                </svg>
+                <h1>YT Buzz</h1>
+            </div>
+            <p class="subtitle">Download any YouTube video in any quality</p>
+        </header>
+
+        <!-- URL Input -->
+        <div class="input-section">
+            <div class="input-wrapper">
+                <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                </svg>
+                <input 
+                    type="text" 
+                    id="urlInput" 
+                    placeholder="Paste YouTube URL here..." 
+                    autocomplete="off"
+                    spellcheck="false"
+                >
+                <button id="fetchBtn" class="btn btn-primary">
+                    <span class="btn-text">Get Formats</span>
+                    <span class="btn-spinner" hidden>
+                        <svg viewBox="0 0 24 24" class="spinner"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4" stroke-dashoffset="10"/></svg>
+                    </span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Error Message -->
+        <div id="errorMsg" class="error-msg" hidden></div>
+
+        <!-- Skeleton Loading -->
+        <div id="skeletonSection" class="skeleton-section" hidden>
+            <div class="skeleton-card">
+                <div class="skeleton-thumb"></div>
+                <div class="skeleton-body">
+                    <div class="skeleton-line skeleton-line-long"></div>
+                    <div class="skeleton-line skeleton-line-short"></div>
+                </div>
+            </div>
+            <div class="skeleton-formats">
+                <div class="skeleton-tabs"></div>
+                <div class="skeleton-format-item"><div class="skeleton-badge"></div><div class="skeleton-line skeleton-line-medium"></div></div>
+                <div class="skeleton-format-item"><div class="skeleton-badge"></div><div class="skeleton-line skeleton-line-medium"></div></div>
+                <div class="skeleton-format-item"><div class="skeleton-badge"></div><div class="skeleton-line skeleton-line-medium"></div></div>
+                <div class="skeleton-format-item"><div class="skeleton-badge"></div><div class="skeleton-line skeleton-line-medium"></div></div>
+                <div class="skeleton-format-item"><div class="skeleton-badge"></div><div class="skeleton-line skeleton-line-medium"></div></div>
+            </div>
+        </div>
+
+        <!-- Video Info + Formats -->
+        <div id="resultSection" class="result-section" hidden>
+            <!-- Video Preview -->
+            <div class="video-card">
+                <div class="video-thumbnail-wrapper" id="videoPlayerArea">
+                    <img id="thumbnail" class="video-thumbnail" src="" alt="Video thumbnail">
+                    <span id="duration" class="video-duration"></span>
+                    <button id="playBtn" class="play-btn" hidden title="Preview video">
+                        <svg viewBox="0 0 24 24" fill="white"><polygon points="8,5 19,12 8,19"/></svg>
+                    </button>
+                </div>
+                <div class="video-info">
+                    <h2 id="videoTitle" class="video-title"></h2>
+                    <p id="videoMeta" class="video-meta"></p>
+                </div>
+            </div>
+
+            <!-- Format Picker -->
+            <div class="format-section">
+                <h3 class="format-heading">Choose Format</h3>
+                <div id="formatTabs" class="format-tabs">
+                    <button class="tab active" data-tab="video">Video</button>
+                    <button class="tab" data-tab="audio">Audio Only</button>
+                </div>
+                <div id="formatList" class="format-list"></div>
+            </div>
+        </div>
+
+        <!-- Playlist View -->
+        <div id="playlistSection" class="result-section" hidden>
+            <div class="playlist-header">
+                <div class="playlist-info">
+                    <h2 id="playlistTitle" class="playlist-title"></h2>
+                    <p id="playlistMeta" class="video-meta"></p>
+                </div>
+                <div class="playlist-actions">
+                    <div class="playlist-quality-pick">
+                        <label for="playlistQuality">Quality:</label>
+                        <select id="playlistQuality" class="quality-select">
+                            <option value="bestvideo">Best Video</option>
+                            <option value="720">720p</option>
+                            <option value="480">480p</option>
+                            <option value="bestaudio">Audio Only (MP3)</option>
+                        </select>
+                    </div>
+                    <button id="downloadAllBtn" class="btn btn-primary">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Download All
+                    </button>
+                </div>
+            </div>
+
+            <!-- Download Queue Progress -->
+            <div id="queueProgress" class="queue-progress" hidden>
+                <div class="queue-progress-header">
+                    <span id="queueStatus" class="queue-status-text"></span>
+                    <span id="queueCount" class="queue-count"></span>
+                </div>
+                <div class="dl-progress-bar-track">
+                    <div id="queueBar" class="dl-progress-bar-fill"></div>
+                </div>
+            </div>
+
+            <div id="playlistList" class="playlist-list"></div>
+        </div>
+
+        <!-- How to Use -->
+        <section class="info-section">
+            <h2 class="info-heading">How to Use</h2>
+            <div class="steps-grid">
+                <div class="step-card">
+                    <div class="step-number">1</div>
+                    <h3>Paste the Link</h3>
+                    <p>Copy any YouTube video or playlist URL and paste it into the input box above.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">2</div>
+                    <h3>Pick a Quality</h3>
+                    <p>Choose from available video resolutions (4K, 1080p, 720p, 480p) or audio-only (MP3).</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">3</div>
+                    <h3>Download</h3>
+                    <p>Click any format to start downloading. The file will be saved to your device instantly.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Features -->
+        <section class="info-section">
+            <h2 class="info-heading">Features</h2>
+            <div class="features-grid">
+                <div class="feature-item">
+                    <div class="feature-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                    </div>
+                    <div>
+                        <strong>Multiple Qualities</strong>
+                        <p>Download in any resolution from 144p to 4K.</p>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                    </div>
+                    <div>
+                        <strong>Audio Extraction</strong>
+                        <p>Convert any video to MP3 audio files.</p>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    </div>
+                    <div>
+                        <strong>Playlist Support</strong>
+                        <p>Download entire playlists with one click.</p>
+                    </div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    </div>
+                    <div>
+                        <strong>100% Private</strong>
+                        <p>No data stored. No tracking. No ads. Ever.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- FAQ -->
+        <section class="info-section">
+            <h2 class="info-heading">Frequently Asked Questions</h2>
+            <div class="faq-list">
+                <details class="faq-item">
+                    <summary>Is this free to use?</summary>
+                    <p>Yes, completely free. No sign-up, no subscription, no hidden fees. Just paste a link and download.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Do you store my downloads or data?</summary>
+                    <p>No. All downloads are processed in real-time and files are immediately deleted from the server after transfer. We never store, log, or track your activity.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>What formats are supported?</summary>
+                    <p>You can download videos in MP4 (any resolution from 144p to 4K) or extract audio as MP3. Playlist downloads are also supported.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Why is my download slow?</summary>
+                    <p>Download speed depends on your internet connection and the video quality you chose. Higher resolutions (1080p, 4K) are larger files and take longer to process.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Does this work with private or unlisted videos?</summary>
+                    <p>No, only publicly available YouTube videos and playlists can be downloaded.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Can I download age-restricted videos?</summary>
+                    <p>No, this tool only works with publicly accessible content.</p>
+                </details>
+            </div>
+        </section>
+
+        <!-- Message -->
+        <section class="message-section">
+            <div class="message-card">
+                <div class="message-badge">A Message From The Creator</div>
+                <h2 class="message-heading">FREE FOR ALL</h2>
+                <p class="message-text">Your privacy is my concern. No accounts. No tracking. No data collection. Everything runs on your device and is deleted the moment the download finishes. I built this because everyone deserves access to content they want, without giving up their privacy.</p>
+                <div class="message-tagline">YOUR PRIVACY &mdash; MY CONCERN</div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Developed by <strong>Shubham</strong></p>
+            <p class="footer-sub">Built with yt-dlp + FastAPI &middot; For personal use only</p>
+        </footer>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
