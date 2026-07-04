@@ -3,15 +3,12 @@ import re
 import uuid
 import shutil
 import asyncio
-import logging
 import yt_dlp
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-
-logger = logging.getLogger("keepalive")
 
 # ── Keep-Alive Background Task ────────────────────────────
 async def keep_alive():
