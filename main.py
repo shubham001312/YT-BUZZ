@@ -21,10 +21,7 @@ async def keep_alive():
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not render_url:
         return  # Skip keep-alive on local dev
-    try:
-        import httpx
-    except ImportError:
-        print("[keepalive] httpx not installed — keep-alive disabled")
+    if not httpx:
         return
     while True:
         await asyncio.sleep(600)  # 10 minutes
@@ -247,7 +244,6 @@ async def video_info(url: str):
             }
         except yt_dlp.utils.DownloadError as e:
             last_error = e
-            error_str = str(e).lower()
             continue
 
     # Layer 2: Try with cookies if age-restricted or any error
@@ -481,7 +477,7 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
 
 
 @app.get("/api/download-invidious")
-async def download_invidious(url: str, video_id: str, itag: str, ext: str = "mp4", background_tasks: BackgroundTasks = None):
+async def download_invidious(video_id: str, itag: str, ext: str = "mp4", background_tasks: BackgroundTasks = None):
     """Download video via Invidious proxy (fallback for age-restricted videos)."""
     if not httpx:
         raise HTTPException(status_code=500, detail="Invidious proxy not available (httpx not installed)")
