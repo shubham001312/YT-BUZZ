@@ -7,7 +7,7 @@ import asyncio
 import yt_dlp
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 try:
@@ -54,17 +54,21 @@ COOKIES_DIR.mkdir(exist_ok=True)
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "")  # Legacy env var support
 
 def _get_cookies_path() -> str | None:
-    """Return a randomly selected cookies file path.
+    """Return a cookies file path.
     
     Priority:
     1. COOKIES_FILE env var (if set)
-    2. Random pick from cookies/*.txt files
-    3. Uploaded cookies (legacy: cookies/youtube_cookies.txt)
+    2. Extension-synced cookies (cookies/extension_cookies.txt) — most recent
+    3. Random pick from other cookies/*.txt files
     """
     if COOKIES_FILE and Path(COOKIES_FILE).exists():
         return COOKIES_FILE
-    # Find all .txt files in cookies/ directory
-    cookie_files = list(COOKIES_DIR.glob("*.txt"))
+    # Prefer extension-synced cookies (most likely to be fresh)
+    ext_cookies = COOKIES_DIR / "extension_cookies.txt"
+    if ext_cookies.exists():
+        return str(ext_cookies)
+    # Find all .txt files in cookies/ directory (excluding extension_cookies.txt)
+    cookie_files = [f for f in COOKIES_DIR.glob("*.txt") if f.name != "extension_cookies.txt"]
     if not cookie_files:
         return None
     # Randomly pick one to distribute load across accounts
@@ -198,6 +202,41 @@ async def upload_cookies(file: UploadFile = File(...)):
     dest = COOKIES_DIR / "youtube_cookies.txt"
     dest.write_text(text, encoding="utf-8")
     return JSONResponse({"status": "ok", "message": "Cookies uploaded successfully. Age-restricted videos should now work."})
+
+
+@app.post("/api/extension-cookies")
+async def receive_extension_cookies(request: Request):
+    """Accept Netscape-format cookies from the YT Buzz browser extension.
+    
+    The extension extracts YouTube cookies from the user's browser and sends them
+    here. This allows age-restricted video downloads without manual file upload.
+    """
+    body = await request.body()
+    text = body.decode("utf-8", errors="ignore")
+
+    # Validate: must contain YouTube cookies
+    if "youtube.com" not in text and ".youtube.com" not in text:
+        raise HTTPException(status_code=400, detail="No YouTube cookies found in the request.")
+
+    # Validate: must be Netscape format
+    if "# Netscape" not in text and not text.startswith(".") and not text.startswith("youtube"):
+        raise HTTPException(status_code=400, detail="Invalid cookie format. Expected Netscape HTTP Cookie File format.")
+
+    # Count cookies for response
+    cookie_lines = [l for l in text.splitlines() if l.strip() and not l.startswith("#") and len(l.split("\t")) >= 7]
+
+    if len(cookie_lines) == 0:
+        raise HTTPException(status_code=400, detail="No valid cookie entries found.")
+
+    # Save to a dedicated file for extension-synced cookies
+    dest = COOKIES_DIR / "extension_cookies.txt"
+    dest.write_text(text, encoding="utf-8")
+
+    return JSONResponse({
+        "status": "ok",
+        "message": f"Cookies synced from browser extension ({len(cookie_lines)} cookies). Age-restricted videos should now work.",
+        "cookie_count": len(cookie_lines),
+    })
 
 
 @app.get("/api/info")

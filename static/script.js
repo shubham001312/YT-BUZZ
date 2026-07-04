@@ -621,7 +621,7 @@ formatTabs.addEventListener("click", (e) => {
   renderFormats(tab.dataset.tab);
 });
 
-// ── Cookie Upload ──────────────────────────────────────
+// ── Cookie Upload (Manual) ──────────────────────────────
 cookiesFile.addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;
@@ -643,6 +643,31 @@ cookiesFile.addEventListener("change", async (e) => {
     showToast("Upload failed: " + err.message, "error");
   }
   cookiesFile.value = "";
+});
+
+// ── Extension Install Modal ─────────────────────────────
+const extensionModal = document.getElementById("extensionModal");
+const extensionInstallBtn = document.getElementById("extensionInstallBtn");
+const closeModal = document.getElementById("closeModal");
+
+extensionInstallBtn.addEventListener("click", () => {
+  extensionModal.hidden = false;
+});
+
+closeModal.addEventListener("click", () => {
+  extensionModal.hidden = true;
+});
+
+extensionModal.addEventListener("click", (e) => {
+  if (e.target === extensionModal) {
+    extensionModal.hidden = true;
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !extensionModal.hidden) {
+    extensionModal.hidden = true;
+  }
 });
 
 formatList.addEventListener("click", (e) => {

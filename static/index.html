@@ -114,13 +114,49 @@
         <!-- Error Message -->
         <div id="errorMsg" class="error-msg" hidden></div>
 
-        <!-- Cookies Upload (for age-restricted videos) -->
+        <!-- Cookies / Extension Banner (for age-restricted videos) -->
         <div id="cookiesBanner" class="cookies-banner" hidden>
             <div class="cookies-content">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                <span>Age-restricted video? Upload your YouTube <strong>cookies.txt</strong> file to unlock it.</span>
-                <label for="cookiesFile" class="cookies-upload-btn">Upload Cookies</label>
+                <div class="cookies-text">
+                    <strong>Age-restricted video?</strong> Install the <strong>YT Buzz Cookie Helper</strong> extension to unlock it automatically — no manual uploads needed.
+                </div>
+            </div>
+            <div class="cookies-actions">
+                <label class="cookies-upload-btn" id="extensionInstallBtn">How to Install</label>
+                <label for="cookiesFile" class="cookies-upload-alt">Or upload cookies.txt manually</label>
                 <input type="file" id="cookiesFile" accept=".txt" hidden>
+            </div>
+        </div>
+
+        <!-- Extension Install Instructions Modal -->
+        <div id="extensionModal" class="extension-modal" hidden>
+            <div class="extension-modal-inner">
+                <div class="extension-modal-header">
+                    <h3>Install YT Buzz Cookie Helper</h3>
+                    <button id="closeModal" class="extension-modal-close">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                </div>
+                <div class="extension-steps">
+                    <div class="extension-step">
+                        <div class="extension-step-num">1</div>
+                        <div><strong>Open Chrome Extensions</strong><br><span class="extension-step-detail">Go to <code>chrome://extensions</code> in your browser</span></div>
+                    </div>
+                    <div class="extension-step">
+                        <div class="extension-step-num">2</div>
+                        <div><strong>Enable Developer Mode</strong><br><span class="extension-step-detail">Toggle the "Developer mode" switch in the top-right corner</span></div>
+                    </div>
+                    <div class="extension-step">
+                        <div class="extension-step-num">3</div>
+                        <div><strong>Load Extension</strong><br><span class="extension-step-detail">Click "Load unpacked" and select the <code>browser-extension</code> folder from this project</span></div>
+                    </div>
+                    <div class="extension-step">
+                        <div class="extension-step-num">4</div>
+                        <div><strong>Click the Extension Icon</strong><br><span class="extension-step-detail">On any page, click the YT Buzz icon and hit <strong>"Sync YouTube Cookies Now"</strong></span></div>
+                    </div>
+                </div>
+                <p class="extension-note">The extension only reads YouTube cookies — it does not track you or access any other data.</p>
             </div>
         </div>
 
