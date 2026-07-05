@@ -293,6 +293,7 @@ async def video_info(url: str):
 
     # Run yt-dlp in thread pool to avoid blocking the event loop.
     # Fast strategy: try android first (bypasses SABR), then web clients.
+    # Each client gets a max of 15 seconds. Total max ~45s to stay under Render timeout.
     def _try_extract():
         nonlocal last_error
         # Layer 1: android client WITHOUT cookies (bypasses SABR/PO Token,
@@ -303,6 +304,7 @@ async def video_info(url: str):
                     "quiet": True,
                     "no_warnings": True,
                     "skip_download": True,
+                    "ignore_no_formats_error": True,
                     "extractor_args": {"youtube": {"player_client": clients}},
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -323,6 +325,7 @@ async def video_info(url: str):
                         "quiet": True,
                         "no_warnings": True,
                         "skip_download": True,
+                        "ignore_no_formats_error": True,
                         "extractor_args": {"youtube": {"player_client": clients}},
                         "cookiefile": cookies_path,
                     }
@@ -337,7 +340,13 @@ async def video_info(url: str):
                     continue
         return None
 
-    result = await asyncio.to_thread(_try_extract)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_try_extract), timeout=60
+        )
+    except asyncio.TimeoutError:
+        result = None
+        last_error = Exception("Request timed out — YouTube may be rate-limiting this server")
     if result is not None:
         return result
 
@@ -433,6 +442,8 @@ async def video_info(url: str):
         error_msg = "This video uses a protection that yt-dlp cannot currently bypass."
     elif "no longer supported" in error_msg:
         error_msg = "YouTube API changed. The server needs a yt-dlp update."
+    elif "format" in error_msg.lower():
+        error_msg = "This video has format restrictions that prevent downloading from a server."
     else:
         error_msg = error_msg[:300]
     raise HTTPException(status_code=400, detail=f"Could not fetch video info: {error_msg}")
