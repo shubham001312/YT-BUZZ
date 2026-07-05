@@ -2,13 +2,15 @@ import os
 import re
 import sys
 import uuid
+import json
 import random
 import shutil
 import asyncio
 import yt_dlp
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from datetime import datetime, timezone
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 try:
@@ -22,6 +24,7 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 COOKIES_DIR = Path("cookies")
 COOKIES_DIR.mkdir(exist_ok=True)
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "")
+COOKIE_ADMIN_KEY = os.environ.get("COOKIE_ADMIN_KEY", "")
 PROFILE_DIR = Path("browser_profile")
 COOKIE_META = COOKIES_DIR / "cookie_meta.json"
 
@@ -641,6 +644,52 @@ async def playlist_info(url: str):
         raise HTTPException(status_code=400, detail=f"Could not fetch playlist: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+@app.post("/api/upload-cookies")
+async def upload_cookies(request: Request):
+    """Upload fresh cookies.txt content to the server.
+    
+    Protected by COOKIE_ADMIN_KEY env var.
+    Send POST with: Content-Type: text/plain and cookies.txt content as body.
+    Header: X-Admin-Key: <your-key>
+    """
+    # Check admin key if configured
+    if COOKIE_ADMIN_KEY:
+        admin_key = request.headers.get("x-admin-key", "")
+        if admin_key != COOKIE_ADMIN_KEY:
+            raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    body = await request.body()
+    content = body.decode("utf-8", errors="ignore")
+
+    if not content or "youtube.com" not in content:
+        raise HTTPException(status_code=400, detail="Invalid cookies content — must contain YouTube cookies")
+
+    # Save cookies
+    cookie_file = COOKIES_DIR / "cookies.txt"
+    cookie_file.write_text(content)
+
+    # Update metadata
+    auth_cookies = []
+    for name in ["SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO"]:
+        if name in content:
+            auth_cookies.append(name)
+
+    meta = {
+        "last_refresh": datetime.now(timezone.utc).isoformat(),
+        "last_upload": datetime.now(timezone.utc).isoformat(),
+        "status": "active",
+        "cookie_count": content.count("\n"),
+        "auth_cookies": auth_cookies,
+    }
+    COOKIE_META.write_text(json.dumps(meta, indent=2))
+
+    return JSONResponse({
+        "success": True,
+        "message": f"Cookies uploaded ({len(content):,} bytes, {len(auth_cookies)} auth cookies)",
+        "cookie_count": meta["cookie_count"],
+        "auth_cookies": auth_cookies,
+    })
 
 
 @app.get("/api/cookie-status")

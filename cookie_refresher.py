@@ -243,6 +243,62 @@ def status():
         print(f"  File:         {COOKIE_FILE} ({COOKIE_FILE.stat().st_size:,} bytes)")
 
 
+def push():
+    """Refresh cookies locally and push them to the server via API.
+    
+    Usage: python cookie_refresher.py push <server-url> [admin-key]
+    """
+    # Read args from sys.argv since main() doesn't pass them
+    server_url = sys.argv[2] if len(sys.argv) > 2 else ""
+    admin_key = sys.argv[3] if len(sys.argv) > 3 else ""
+
+    if not server_url:
+        print("Usage: python cookie_refresher.py push <server-url> [admin-key]")
+        print("Example: python cookie_refresher.py push https://yt-buzz.onrender.com")
+        return False
+    # Step 1: Refresh cookies locally
+    print("Step 1: Refreshing cookies locally...")
+    if not refresh():
+        print("Failed to refresh cookies. Aborting push.")
+        return False
+
+    # Step 2: Read the cookies file
+    if not COOKIE_FILE.exists():
+        print("Error: No cookies.txt file found after refresh.")
+        return False
+
+    content = COOKIE_FILE.read_text()
+    print(f"Step 2: Read {len(content):,} bytes from {COOKIE_FILE}")
+
+    # Step 3: Push to server
+    print(f"Step 3: Pushing to {server_url}/api/upload-cookies...")
+    try:
+        import urllib.request
+        import urllib.error
+
+        url = f"{server_url.rstrip('/')}/api/upload-cookies"
+        headers = {
+            "Content-Type": "text/plain",
+        }
+        if admin_key:
+            headers["X-Admin-Key"] = admin_key
+
+        req = urllib.request.Request(url, data=content.encode("utf-8"), headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+            print(f"Success: {result.get('message', 'OK')}")
+            print(f"Auth cookies: {', '.join(result.get('auth_cookies', []))}")
+            return True
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode() if e.fp else ""
+        print(f"Server error ({e.code}): {error_body[:200]}")
+        return False
+    except Exception as e:
+        print(f"Connection error: {e}")
+        print(f"Make sure the server is running at {server_url}")
+        return False
+
+
 def export():
     """Just export cookies (same as refresh, but named for clarity)."""
     return refresh()
@@ -252,6 +308,7 @@ COMMANDS = {
     "login": login,
     "refresh": refresh,
     "status": status,
+    "push": push,
     "export": export,
 }
 
