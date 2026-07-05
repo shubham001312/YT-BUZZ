@@ -3,8 +3,10 @@ __pycache__/
 *.pyc
 downloads/
 cookies/*.txt
+cookies/cookie_meta.json
 cookies/extension_cookies.txt
 cookies/pasted_cookies.txt
+browser_profile/
 server.log
 .env
 *.egg-info/

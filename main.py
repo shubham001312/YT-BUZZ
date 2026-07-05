@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import uuid
 import random
 import shutil
@@ -14,6 +15,15 @@ try:
     import httpx
 except ImportError:
     httpx = None
+
+# Directories and constants (defined early for use by background tasks)
+DOWNLOAD_DIR = Path("downloads")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+COOKIES_DIR = Path("cookies")
+COOKIES_DIR.mkdir(exist_ok=True)
+COOKIES_FILE = os.environ.get("COOKIES_FILE", "")
+PROFILE_DIR = Path("browser_profile")
+COOKIE_META = COOKIES_DIR / "cookie_meta.json"
 
 # ── Keep-Alive Background Task ────────────────────────────
 async def keep_alive():
@@ -32,26 +42,71 @@ async def keep_alive():
         except Exception as e:
             print(f"[keepalive] ping failed: {e}")
 
+
+# ── Cookie Auto-Refresh Background Task ──────────────────
+async def auto_refresh_cookies():
+    """Refresh cookies every 12 hours using Playwright persistent profile.
+    
+    This runs in the background and keeps cookies fresh automatically.
+    Only runs if a browser profile exists (user has logged in at least once).
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    while True:
+        await asyncio.sleep(12 * 3600)  # 12 hours
+
+        # Only refresh if browser profile exists
+        if not PROFILE_DIR.exists():
+            print("[cookie-refresh] No browser profile found, skipping.")
+            continue
+
+        # Check if cookies are stale (>7 days old)
+        try:
+            if COOKIE_META.exists():
+                meta = _json.loads(COOKIE_META.read_text())
+                last = meta.get("last_refresh")
+                if last:
+                    last_dt = datetime.fromisoformat(last)
+                    age_days = (datetime.now(timezone.utc) - last_dt).days
+                    if age_days < 7:
+                        print(f"[cookie-refresh] Cookies are {age_days}d old, still fresh.")
+                        continue
+        except Exception:
+            pass
+
+        # Run the cookie refresher (async to avoid blocking event loop)
+        try:
+            print("[cookie-refresh] Starting cookie refresh...")
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "cookie_refresher.py", "refresh",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                if proc.returncode == 0:
+                    print(f"[cookie-refresh] Success: {stdout.decode().strip()}")
+                else:
+                    print(f"[cookie-refresh] Failed: {stderr.decode().strip()}")
+            except asyncio.TimeoutError:
+                proc.kill()
+                print("[cookie-refresh] Timeout during cookie refresh.")
+        except Exception as e:
+            print(f"[cookie-refresh] Error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start keep-alive background task on startup
-    task = asyncio.create_task(keep_alive())
+    # Start background tasks on startup
+    keep_alive_task = asyncio.create_task(keep_alive())
+    cookie_refresh_task = asyncio.create_task(auto_refresh_cookies())
     yield
     # Cancel on shutdown
-    task.cancel()
+    keep_alive_task.cancel()
+    cookie_refresh_task.cancel()
 
 app = FastAPI(title="YT Buzz Downloader", lifespan=lifespan)
-
-DOWNLOAD_DIR = Path("downloads")
-DOWNLOAD_DIR.mkdir(exist_ok=True)
-
-
-# Preset cookies for age-restricted videos (Netscape format)
-# Place multiple cookies.txt files in the cookies/ directory
-# The server randomly picks one for each request to distribute load
-COOKIES_DIR = Path("cookies")
-COOKIES_DIR.mkdir(exist_ok=True)
-COOKIES_FILE = os.environ.get("COOKIES_FILE", "")
 
 def _get_cookies_path() -> str | None:
     """Return a cookies file path from the server's preset cookies directory.
@@ -586,6 +641,91 @@ async def playlist_info(url: str):
         raise HTTPException(status_code=400, detail=f"Could not fetch playlist: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
+@app.get("/api/cookie-status")
+async def cookie_status():
+    """Check cookie freshness and browser profile status."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    meta = {}
+    if COOKIE_META.exists():
+        try:
+            meta = _json.loads(COOKIE_META.read_text())
+        except Exception:
+            pass
+
+    has_profile = PROFILE_DIR.exists()
+    has_cookies = bool(list(COOKIES_DIR.glob("*.txt")))
+
+    result = {
+        "has_browser_profile": has_profile,
+        "has_cookies": has_cookies,
+        "status": meta.get("status", "unknown"),
+        "last_refresh": meta.get("last_refresh"),
+        "last_login": meta.get("last_login"),
+        "cookie_count": meta.get("cookie_count", 0),
+        "auth_cookies": meta.get("auth_cookies", []),
+    }
+
+    # Calculate age
+    last_refresh = meta.get("last_refresh")
+    if last_refresh:
+        try:
+            last_dt = datetime.fromisoformat(last_refresh)
+            age_days = (datetime.now(timezone.utc) - last_dt).days
+            result["age_days"] = age_days
+            result["is_stale"] = age_days >= 14
+            result["is_aging"] = age_days >= 7
+        except Exception:
+            pass
+
+    return JSONResponse(result)
+
+
+@app.post("/api/refresh-cookies")
+async def refresh_cookies_endpoint():
+    """Trigger a cookie refresh using Playwright."""
+    import json as _json
+
+    if not PROFILE_DIR.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No browser profile found. Run 'python cookie_refresher.py login' first."
+        )
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "cookie_refresher.py", "refresh",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(status_code=500, detail="Cookie refresh timed out.")
+
+        if proc.returncode == 0:
+            meta = {}
+            if COOKIE_META.exists():
+                meta = _json.loads(COOKIE_META.read_text())
+            return JSONResponse({
+                "success": True,
+                "message": "Cookies refreshed successfully.",
+                "status": meta.get("status", "unknown"),
+                "cookie_count": meta.get("cookie_count", 0),
+            })
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Cookie refresh failed: {stderr.decode().strip()}",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cookie refresh error: {str(e)}")
 
 
 if __name__ == "__main__":
