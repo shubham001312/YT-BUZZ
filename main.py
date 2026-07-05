@@ -302,7 +302,6 @@ async def video_info(url: str):
                     "quiet": True,
                     "no_warnings": True,
                     "skip_download": True,
-                    "ignore_no_formats_error": True,
                     "extractor_args": {"youtube": {"player_client": clients}},
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -311,6 +310,8 @@ async def video_info(url: str):
                     resp = _info_response(info)
                     if resp["formats"]:
                         return resp
+                # If we got info but no formats, track it as last_error
+                last_error = Exception(f"No formats available via {clients[0]} client")
             except Exception as e:
                 last_error = e
                 continue
@@ -322,7 +323,6 @@ async def video_info(url: str):
                         "quiet": True,
                         "no_warnings": True,
                         "skip_download": True,
-                        "ignore_no_formats_error": True,
                         "extractor_args": {"youtube": {"player_client": clients}},
                         "cookiefile": cookies_path,
                     }
