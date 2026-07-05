@@ -99,8 +99,39 @@ async def auto_refresh_cookies():
             print(f"[cookie-refresh] Error: {e}")
 
 
+# ── In-memory download jobs (job_id -> status dict) ─────
+download_jobs: dict[str, dict] = {}
+JOB_MAX_AGE = 3600  # Clean up jobs older than 1 hour
+
+
+def _cleanup_old_jobs():
+    """Remove download jobs older than JOB_MAX_AGE to prevent memory leak."""
+    now = datetime.now(timezone.utc)
+    expired = [
+        jid for jid, j in download_jobs.items()
+        if (now - datetime.fromisoformat(j.get("created", now.isoformat()))).total_seconds() > JOB_MAX_AGE
+    ]
+    for jid in expired:
+        job = download_jobs.pop(jid, {})
+        fp = job.get("filepath")
+        if fp:
+            shutil.rmtree(Path(fp).parent, ignore_errors=True)
+
+# ── Restore cookies from env var on startup (persists across Render restarts)
+def _restore_cookies_from_env():
+    """If cookies.txt is missing but COOKIE_DATA env var is set, write it to disk.
+    This ensures cookies survive Render restarts/spin-downs."""
+    cookie_data = os.environ.get("COOKIE_DATA", "")
+    if cookie_data and not COOKIES_DIR.joinpath("cookies.txt").exists():
+        COOKIES_DIR.mkdir(exist_ok=True)
+        COOKIES_DIR.joinpath("cookies.txt").write_text(cookie_data)
+        print(f"[startup] Restored cookies from COOKIE_DATA env var ({len(cookie_data)} bytes)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Restore cookies from env on startup
+    _restore_cookies_from_env()
     # Start background tasks on startup
     keep_alive_task = asyncio.create_task(keep_alive())
     cookie_refresh_task = asyncio.create_task(auto_refresh_cookies())
@@ -261,17 +292,37 @@ async def video_info(url: str):
         }
 
     # Layer 1: Cookies + android clients (most reliable on cloud servers)
-    # Android client bypasses PO Token / SABR / bot detection.
-    # Cookies provide authenticated access for age-restricted content.
-    if cookies_path:
-        for clients in ANDROID_CLIENTS:
+    # Layer 2: Web clients without cookies (fast for public videos)
+    # Run yt-dlp in thread pool to avoid blocking the event loop on Render.
+    def _try_extract():
+        nonlocal last_error
+        # Layer 1: cookies + android
+        if cookies_path:
+            for clients in ANDROID_CLIENTS:
+                try:
+                    ydl_opts = {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "skip_download": True,
+                        "extractor_args": {"youtube": {"player_client": clients}},
+                        "cookiefile": cookies_path,
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                    resp = _info_response(info)
+                    if resp["formats"]:
+                        return resp
+                except Exception as e:
+                    last_error = e
+                    continue
+        # Layer 2: web clients without cookies
+        for clients in WEB_CLIENTS:
             try:
                 ydl_opts = {
                     "quiet": True,
                     "no_warnings": True,
                     "skip_download": True,
                     "extractor_args": {"youtube": {"player_client": clients}},
-                    "cookiefile": cookies_path,
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
@@ -281,24 +332,11 @@ async def video_info(url: str):
             except Exception as e:
                 last_error = e
                 continue
+        return None
 
-    # Layer 2: Try web clients without cookies (fast, no auth needed for public videos)
-    for clients in WEB_CLIENTS:
-        try:
-            ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "skip_download": True,
-                "extractor_args": {"youtube": {"player_client": clients}},
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-            resp = _info_response(info)
-            if resp["formats"]:
-                return resp
-        except Exception as e:
-            last_error = e
-            continue
+    result = await asyncio.to_thread(_try_extract)
+    if result is not None:
+        return result
 
     # Layer 3: Try Invidious proxy as last resort
     video_id_match = re.search(r'(?:v=|youtu\.be/|shorts/)([\w-]+)', url)
@@ -395,26 +433,17 @@ async def video_info(url: str):
     raise HTTPException(status_code=400, detail=f"Could not fetch video info: {error_msg}")
 
 
-@app.get("/api/download")
-async def download_video(url: str, format_id: str, ext: str = "mp4", download_type: str = "video", raw_format: str = "", background_tasks: BackgroundTasks = None):
-    """Download and serve a video file.
-    
-    Server-optimized strategy: cookies + android client first (most reliable on
-    cloud servers), then web clients, then best format fallback.
+def _do_download(url: str, format_id: str, ext: str, download_type: str,
+                  raw_format: str, job_id: str) -> None:
+    """Synchronous download worker — runs in a thread pool to avoid blocking.
+    Updates download_jobs[job_id] with progress/completion.
     """
-    if not url or not YOUTUBE_RE.search(url):
-        raise HTTPException(status_code=400, detail="Invalid YouTube URL")
-
-    url = _clean_url(url)
-
-    job_id = uuid.uuid4().hex[:12]
     output_dir = DOWNLOAD_DIR / job_id
     output_dir.mkdir(exist_ok=True)
-
     output_template = str(output_dir / "%(title)s.%(ext)s")
+    job = download_jobs[job_id]
 
     try:
-        # Build the yt-dlp format selector
         if raw_format:
             fmt_selector = raw_format
         elif download_type == "audio":
@@ -422,7 +451,6 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
         else:
             fmt_selector = f"{format_id}+bestaudio/best"
 
-        # Postprocessors for audio conversion
         postprocessors = []
         if download_type == "audio" and ext == "mp3":
             postprocessors.append({
@@ -433,11 +461,11 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
 
         cookies_path = _get_cookies_path()
 
-        def _clean_download_dir():
+        def _clean():
             for f in output_dir.iterdir():
                 f.unlink(missing_ok=True)
 
-        def _make_opts(fmt, clients, use_cookies=False):
+        def _opts(fmt, clients, use_cookies=False):
             opts = {
                 "format": fmt,
                 "outtmpl": output_template,
@@ -447,7 +475,7 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
                 "merge_output_format": ext if ext != "mp3" else None,
                 "postprocessors": list(postprocessors),
                 "extractor_args": {"youtube": {"player_client": clients}},
-                "concurrent_fragment_downloads": 4,
+                "concurrent_fragment_downloads": 2,
                 "http_chunk_size": 1048576,
                 "socket_timeout": 60,
             }
@@ -456,65 +484,243 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
             return opts
 
         info = None
+        job["progress"] = "Downloading..."
 
-        # Layer 1: Cookies + android clients (most reliable on cloud servers)
+        # Layer 1: Cookies + android clients
         if cookies_path:
             for clients in ANDROID_CLIENTS:
                 try:
-                    _clean_download_dir()
-                    opts = _make_opts(fmt_selector, clients, use_cookies=True)
-                    with yt_dlp.YoutubeDL(opts) as ydl:
+                    _clean()
+                    with yt_dlp.YoutubeDL(_opts(fmt_selector, clients, use_cookies=True)) as ydl:
                         info = ydl.extract_info(url, download=True)
                     if info:
                         break
                 except Exception:
                     continue
 
-        # Layer 2: Web clients without cookies (fast for public videos)
+        # Layer 2: Web clients without cookies
         if info is None:
             for clients in WEB_CLIENTS:
                 try:
-                    _clean_download_dir()
-                    opts = _make_opts(fmt_selector, clients)
-                    with yt_dlp.YoutubeDL(opts) as ydl:
+                    _clean()
+                    with yt_dlp.YoutubeDL(_opts(fmt_selector, clients)) as ydl:
                         info = ydl.extract_info(url, download=True)
                     if info:
                         break
                 except Exception:
                     continue
 
-        # Layer 3: Best format, all clients (final fallback)
+        # Layer 3: Best format, all clients
         if info is None:
             for clients in ALL_CLIENTS:
                 try:
-                    _clean_download_dir()
-                    opts = _make_opts("bestvideo+bestaudio/best", clients, use_cookies=bool(cookies_path))
-                    with yt_dlp.YoutubeDL(opts) as ydl:
+                    _clean()
+                    with yt_dlp.YoutubeDL(_opts("bestvideo+bestaudio/best", clients, use_cookies=bool(cookies_path))) as ydl:
                         info = ydl.extract_info(url, download=True)
                     if info:
                         break
                 except Exception:
                     continue
+
+        if info is None:
+            job["status"] = "error"
+            job["error"] = "Download failed: unable to fetch video"
+            shutil.rmtree(output_dir, ignore_errors=True)
+            return
+
+        files = list(output_dir.iterdir())
+        if not files:
+            job["status"] = "error"
+            job["error"] = "Download failed - no file produced"
+            shutil.rmtree(output_dir, ignore_errors=True)
+            return
+
+        downloaded_file = files[0]
+        job["status"] = "done"
+        job["progress"] = "Complete"
+        job["filename"] = downloaded_file.name
+        job["filepath"] = str(downloaded_file)
+        job["safe_filename"] = re.sub(r'[/\\:*?"<>|]', '_', downloaded_file.name)
+
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)[:300]
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+
+@app.post("/api/download-start")
+async def download_start(request: Request):
+    """Start a download job in the background. Returns job_id for polling."""
+    body = await request.json()
+    url = body.get("url", "")
+    format_id = body.get("format_id", "")
+    ext = body.get("ext", "mp4")
+    download_type = body.get("download_type", "video")
+    raw_format = body.get("raw_format", "")
+
+    if not url or not YOUTUBE_RE.search(url):
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL")
+
+    url = _clean_url(url)
+    job_id = uuid.uuid4().hex[:12]
+    download_jobs[job_id] = {
+        "status": "downloading",
+        "progress": "Starting...",
+        "url": url,
+        "created": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Run download in thread pool to avoid blocking the event loop
+    _cleanup_old_jobs()  # Prevent memory leak
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _do_download, url, format_id, ext, download_type, raw_format, job_id)
+
+    return JSONResponse({"job_id": job_id, "status": "downloading"})
+
+
+@app.get("/api/download-status/{job_id}")
+async def download_status(job_id: str):
+    """Poll download job status."""
+    job = download_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JSONResponse({
+        "status": job.get("status", "unknown"),
+        "progress": job.get("progress", ""),
+        "error": job.get("error"),
+    })
+
+
+@app.get("/api/download-file/{job_id}")
+async def download_file(job_id: str, background_tasks: BackgroundTasks = None):
+    """Serve the completed download file."""
+    job = download_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "done":
+        raise HTTPException(status_code=400, detail=f"Job not ready (status: {job.get('status')})")
+
+    filepath = job.get("filepath", "")
+    if not filepath or not Path(filepath).exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if background_tasks:
+        background_tasks.add_task(_cleanup_dir, Path(filepath).parent)
+    # Clean up job entry after serving
+    download_jobs.pop(job_id, None)
+
+    return FileResponse(
+        path=filepath,
+        filename=job.get("safe_filename", "download.mp4"),
+        media_type="application/octet-stream",
+    )
+
+
+@app.get("/api/download")
+async def download_video(url: str, format_id: str, ext: str = "mp4", download_type: str = "video", raw_format: str = "", background_tasks: BackgroundTasks = None):
+    """Download and serve a video file (synchronous fallback for backward compat).
+    
+    Prefer using /api/download-start + /api/download-status + /api/download-file
+    for a non-blocking experience on Render.
+    """
+    if not url or not YOUTUBE_RE.search(url):
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL")
+
+    url = _clean_url(url)
+
+    job_id = uuid.uuid4().hex[:12]
+    output_dir = DOWNLOAD_DIR / job_id
+    output_dir.mkdir(exist_ok=True)
+    output_template = str(output_dir / "%(title)s.%(ext)s")
+
+    try:
+        if raw_format:
+            fmt_selector = raw_format
+        elif download_type == "audio":
+            fmt_selector = f"{format_id}/bestaudio/best"
+        else:
+            fmt_selector = f"{format_id}+bestaudio/best"
+
+        postprocessors = []
+        if download_type == "audio" and ext == "mp3":
+            postprocessors.append({
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            })
+
+        cookies_path = _get_cookies_path()
+
+        def _clean():
+            for f in output_dir.iterdir():
+                f.unlink(missing_ok=True)
+
+        def _opts(fmt, clients, use_cookies=False):
+            opts = {
+                "format": fmt,
+                "outtmpl": output_template,
+                "quiet": True,
+                "no_warnings": True,
+                "no_cache_dir": True,
+                "merge_output_format": ext if ext != "mp3" else None,
+                "postprocessors": list(postprocessors),
+                "extractor_args": {"youtube": {"player_client": clients}},
+                "concurrent_fragment_downloads": 2,
+                "http_chunk_size": 1048576,
+                "socket_timeout": 60,
+            }
+            if use_cookies and cookies_path:
+                opts["cookiefile"] = cookies_path
+            return opts
+
+        # Run yt-dlp in thread pool to not block event loop
+        def _run_download():
+            info = None
+            if cookies_path:
+                for clients in ANDROID_CLIENTS:
+                    try:
+                        _clean()
+                        with yt_dlp.YoutubeDL(_opts(fmt_selector, clients, use_cookies=True)) as ydl:
+                            info = ydl.extract_info(url, download=True)
+                        if info:
+                            return info
+                    except Exception:
+                        continue
+            for clients in WEB_CLIENTS:
+                try:
+                    _clean()
+                    with yt_dlp.YoutubeDL(_opts(fmt_selector, clients)) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                    if info:
+                        return info
+                except Exception:
+                    continue
+            for clients in ALL_CLIENTS:
+                try:
+                    _clean()
+                    with yt_dlp.YoutubeDL(_opts("bestvideo+bestaudio/best", clients, use_cookies=bool(cookies_path))) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                    if info:
+                        return info
+                except Exception:
+                    continue
+            return None
+
+        info = await asyncio.to_thread(_run_download)
 
         if info is None:
             shutil.rmtree(output_dir, ignore_errors=True)
             raise HTTPException(status_code=500, detail="Download failed: unable to fetch video with any method")
 
-        # Find the downloaded file
         files = list(output_dir.iterdir())
         if not files:
             shutil.rmtree(output_dir, ignore_errors=True)
             raise HTTPException(status_code=500, detail="Download failed — no file produced")
 
         downloaded_file = files[0]
-        filename = downloaded_file.name
-
-        # Sanitize filename for Content-Disposition header
-        # Remove path separators and other unsafe chars for HTTP header
-        safe_filename = re.sub(r'[/\\:*?"<>|]', '_', filename)
-
-        # Schedule cleanup AFTER the response is fully sent
-        background_tasks.add_task(_cleanup_dir, output_dir)
+        safe_filename = re.sub(r'[/\\:*?"<>|]', '_', downloaded_file.name)
+        if background_tasks:
+            background_tasks.add_task(_cleanup_dir, output_dir)
 
         return FileResponse(
             path=str(downloaded_file),

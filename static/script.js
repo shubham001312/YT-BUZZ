@@ -391,15 +391,165 @@ function formatSize(bytes) {
 let activeDownload = null;
 
 function downloadFormat(formatId, ext, type, label, source, videoId) {
-  let downloadUrl;
   if (source === "invidious" && videoId) {
-    downloadUrl = `/api/download-invidious?video_id=${encodeURIComponent(videoId)}&itag=${encodeURIComponent(formatId)}&ext=${encodeURIComponent(ext)}`;
+    // Invidious: direct download via existing endpoint
+    const downloadUrl = `/api/download-invidious?video_id=${encodeURIComponent(videoId)}&itag=${encodeURIComponent(formatId)}&ext=${encodeURIComponent(ext)}`;
+    showDownloadOverlay(label, ext, downloadUrl);
   } else {
+    // YouTube: use async download-start + polling pattern
     const url = urlInput.value.trim();
-    downloadUrl = `/api/download?url=${encodeURIComponent(url)}&format_id=${encodeURIComponent(formatId)}&ext=${encodeURIComponent(ext)}&download_type=${encodeURIComponent(type)}`;
+    showAsyncDownload(label, ext, url, formatId, type);
   }
+}
 
-  showDownloadOverlay(label, ext, downloadUrl);
+function showAsyncDownload(label, ext, url, formatId, type) {
+  const overlay = document.createElement("div");
+  overlay.className = "dl-overlay";
+  overlay.innerHTML = `
+    <div class="dl-overlay-inner">
+      <div class="dl-overlay-left">
+        <div class="dl-spinner"><div class="dl-spinner-ring"></div></div>
+      </div>
+      <div class="dl-overlay-right">
+        <div class="dl-filename">${escapeHtml(label)}<span class="dl-ext">.${ext}</span></div>
+        <div class="dl-status">Starting download...</div>
+        <div class="dl-progress-track"><div class="dl-progress-fill"></div></div>
+        <div class="dl-stats">
+          <span class="dl-stat-speed"></span>
+          <span class="dl-stat-size"></span>
+          <span class="dl-stat-eta"></span>
+        </div>
+      </div>
+      <button class="dl-close-btn" title="Cancel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const fill = overlay.querySelector(".dl-progress-fill");
+  const status = overlay.querySelector(".dl-status");
+  const closeBtn = overlay.querySelector(".dl-close-btn");
+  const spinner = overlay.querySelector(".dl-spinner");
+  let cancelled = false;
+
+  closeBtn.addEventListener("click", () => {
+    cancelled = true;
+    overlay.remove();
+  });
+
+  const steps = [
+    { t: 1000, text: "Connecting to server..." },
+    { t: 3000, text: "Fetching from YouTube..." },
+    { t: 8000, text: "Downloading video..." },
+    { t: 15000, text: "Processing & merging..." },
+    { t: 25000, text: "Almost ready..." },
+    { t: 40000, text: "Still working on it..." },
+  ];
+  const timers = steps.map(s =>
+    setTimeout(() => { if (!cancelled) status.textContent = s.text; }, s.t)
+  );
+
+  // Step 1: Start the download job
+  fetch("/api/download-start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, format_id: formatId, ext, download_type: type }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.job_id) throw new Error(data.detail || "Failed to start download");
+      const jobId = data.job_id;
+      fill.style.width = "30%";
+      status.textContent = "Download started, waiting...";
+
+      // Step 2: Poll for completion
+      const pollInterval = setInterval(() => {
+        if (cancelled) { clearInterval(pollInterval); return; }
+        fetch(`/api/download-status/${jobId}`)
+          .then(r => r.json())
+          .then(s => {
+            if (s.status === "done") {
+              clearInterval(pollInterval);
+              timers.forEach(clearTimeout);
+              fill.style.width = "100%";
+              status.textContent = "Preparing file...";
+              spinner.classList.add("dl-spinner-active");
+
+              // Step 3: Download the file
+              fetch(`/api/download-file/${jobId}`)
+                .then(r => {
+                  if (!r.ok) throw new Error("Failed to fetch file");
+                  const contentLength = parseInt(r.headers.get("Content-Length") || "0", 10);
+                  const reader = r.body.getReader();
+                  const chunks = [];
+                  let received = 0;
+
+                  function pump() {
+                    return reader.read().then(({ done, value }) => {
+                      if (done) {
+                        // Save file
+                        const blob = new Blob(chunks);
+                        const blobUrl = URL.createObjectURL(blob);
+                        const disposition = r.headers.get("Content-Disposition") || "";
+                        let filename = `${label}.${ext}`;
+                        const match = disposition.match(/filename\*=utf-8''([^;]+)/i);
+                        if (match) filename = decodeURIComponent(match[1].replace(/^utf-8''/, ''));
+                        else {
+                          const m2 = disposition.match(/filename[="']?([^;"']+)/i);
+                          if (m2) filename = m2[1].replace(/['"]/g, "");
+                        }
+                        const a = document.createElement("a");
+                        a.href = blobUrl;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+
+                        overlay.classList.add("dl-overlay-success");
+                        status.textContent = "Download complete";
+                        spinner.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" width="28" height="28"><polyline points="20 6 9 17 4 12"/></svg>`;
+                        setTimeout(() => {
+                          overlay.style.opacity = "0";
+                          setTimeout(() => overlay.remove(), 300);
+                        }, 2500);
+                        showToast(`"${filename}" saved`, "success");
+                        return;
+                      }
+                      chunks.push(value);
+                      received += value.length;
+                      if (contentLength > 0) {
+                        const pct = Math.round((received / contentLength) * 100);
+                        fill.style.width = `${pct}%`;
+                        status.textContent = `${pct}% downloaded`;
+                      }
+                      return pump();
+                    });
+                  }
+                  return pump();
+                })
+                .catch(err => {
+                  throw err;
+                });
+            } else if (s.status === "error") {
+              clearInterval(pollInterval);
+              timers.forEach(clearTimeout);
+              overlay.remove();
+              showToast(s.error || "Download failed", "error");
+            }
+            // else keep polling
+          })
+          .catch(() => {
+            // Poll error — keep trying
+          });
+      }, 2000);
+    })
+    .catch(err => {
+      timers.forEach(clearTimeout);
+      overlay.remove();
+      showToast(err.message || "Download failed", "error");
+    });
 }
 
 function showDownloadOverlay(label, ext, downloadUrl) {
