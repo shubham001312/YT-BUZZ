@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import time
 import uuid
 import json
 import random
@@ -293,12 +294,17 @@ async def video_info(url: str):
 
     # Run yt-dlp in thread pool to avoid blocking the event loop.
     # Fast strategy: try android first (bypasses SABR), then web clients.
-    # Each client gets a max of 15 seconds. Total max ~45s to stay under Render timeout.
+    # Render free tier has ~30s request timeout. Use time checks internally
+    # to bail out before Render kills the connection.
+    MAX_TIME = 22  # seconds — leave margin for Render's ~30s proxy timeout
     def _try_extract():
         nonlocal last_error
-        # Layer 1: android client WITHOUT cookies (bypasses SABR/PO Token,
-        # works for public videos even on datacenter IPs)
+        start = time.time()
+        # Layer 1: android client WITHOUT cookies (bypasses SABR/PO Token)
         for clients in [["android"], ["ios"], ["web"], ["web_creator"]]:
+            if time.time() - start > MAX_TIME:
+                last_error = Exception("Request timed out")
+                break
             try:
                 ydl_opts = {
                     "quiet": True,
@@ -318,8 +324,10 @@ async def video_info(url: str):
                 last_error = e
                 continue
         # Layer 2: cookies + android (for age-restricted content)
-        if cookies_path:
+        if cookies_path and time.time() - start < MAX_TIME:
             for clients in [["android"], ["ios"]]:
+                if time.time() - start > MAX_TIME:
+                    break
                 try:
                     ydl_opts = {
                         "quiet": True,
@@ -342,7 +350,7 @@ async def video_info(url: str):
 
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(_try_extract), timeout=60
+            asyncio.to_thread(_try_extract), timeout=28
         )
     except asyncio.TimeoutError:
         result = None
