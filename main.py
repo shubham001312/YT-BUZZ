@@ -28,6 +28,7 @@ COOKIES_FILE = os.environ.get("COOKIES_FILE", "")
 COOKIE_ADMIN_KEY = os.environ.get("COOKIE_ADMIN_KEY", "")
 PROFILE_DIR = Path("browser_profile")
 COOKIE_META = COOKIES_DIR / "cookie_meta.json"
+POT_TOKENS = COOKIES_DIR / "po_tokens.json"
 
 # ── Keep-Alive Background Task ────────────────────────────
 async def keep_alive():
@@ -129,17 +130,59 @@ def _restore_cookies_from_env():
         print(f"[startup] Restored cookies from COOKIE_DATA env var ({len(cookie_data)} bytes)")
 
 
+def _get_po_tokens() -> dict:
+    """Load cached PO tokens from disk."""
+    if POT_TOKENS.exists():
+        try:
+            tokens = json.loads(POT_TOKENS.read_text())
+            # Check if tokens are stale (>1 hour old)
+            generated = datetime.fromisoformat(tokens.get("generated_at", "2000-01-01"))
+            if (datetime.now(timezone.utc) - generated).total_seconds() < 3600:
+                return tokens
+        except Exception:
+            pass
+    return {}
+
+
+async def _periodic_po_token_refresh():
+    """Refresh PO tokens every hour in the background."""
+    while True:
+        await asyncio.sleep(3600)  # 1 hour
+        await _generate_po_tokens()
+
+
+async def _generate_po_tokens():
+    """Generate PO tokens using Playwright in background."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "po_token_generator.py", "generate",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode == 0:
+            print(f"[po-tokens] Generated successfully")
+        else:
+            print(f"[po-tokens] Failed: {stderr.decode().strip()[:200]}")
+    except Exception as e:
+        print(f"[po-tokens] Error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Restore cookies from env on startup
     _restore_cookies_from_env()
+    # Generate PO tokens on startup
+    asyncio.create_task(_generate_po_tokens())
     # Start background tasks on startup
     keep_alive_task = asyncio.create_task(keep_alive())
     cookie_refresh_task = asyncio.create_task(auto_refresh_cookies())
+    pot_refresh_task = asyncio.create_task(_periodic_po_token_refresh())
     yield
     # Cancel on shutdown
     keep_alive_task.cancel()
     cookie_refresh_task.cancel()
+    pot_refresh_task.cancel()
 
 app = FastAPI(title="YT Buzz Downloader", lifespan=lifespan)
 
@@ -297,6 +340,7 @@ async def video_info(url: str):
     # Render free tier has ~30s request timeout. Use time checks internally
     # to bail out before Render kills the connection.
     MAX_TIME = 22  # seconds — leave margin for Render's ~30s proxy timeout
+    po_tokens = _get_po_tokens()  # Load PO tokens if available
     def _try_extract():
         nonlocal last_error
         start = time.time()
@@ -313,6 +357,10 @@ async def video_info(url: str):
                     "ignore_no_formats_error": True,
                     "extractor_args": {"youtube": {"player_client": clients}},
                 }
+                # Add PO token if available
+                if po_tokens.get("po_token") and po_tokens.get("visitor_data"):
+                    ydl_opts["extractor_args"]["youtube"]["po_token"] = po_tokens["po_token"]
+                    ydl_opts["extractor_args"]["youtube"]["po_visitor_data"] = po_tokens["visitor_data"]
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
                 if info and info.get("formats"):
@@ -337,6 +385,10 @@ async def video_info(url: str):
                         "extractor_args": {"youtube": {"player_client": clients}},
                         "cookiefile": cookies_path,
                     }
+                    # Add PO token if available
+                    if po_tokens.get("po_token") and po_tokens.get("visitor_data"):
+                        ydl_opts["extractor_args"]["youtube"]["po_token"] = po_tokens["po_token"]
+                        ydl_opts["extractor_args"]["youtube"]["po_visitor_data"] = po_tokens["visitor_data"]
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=False)
                     if info and info.get("formats"):
@@ -509,12 +561,22 @@ def _do_download(url: str, format_id: str, ext: str, download_type: str,
 
         info = None
         job["progress"] = "Downloading..."
+        po_tokens = _get_po_tokens()  # Load PO tokens if available
+
+        def _add_po_opts(opts_dict):
+            """Add PO token args to yt-dlp options if available."""
+            if po_tokens.get("po_token") and po_tokens.get("visitor_data"):
+                ea = opts_dict.setdefault("extractor_args", {"youtube": {}})
+                ea["youtube"]["po_token"] = po_tokens["po_token"]
+                ea["youtube"]["po_visitor_data"] = po_tokens["visitor_data"]
 
         # Layer 1: android without cookies (bypasses SABR, works for public videos)
         for clients in [["android"], ["ios"], ["web"], ["web_creator"]]:
             try:
                 _clean()
-                with yt_dlp.YoutubeDL(_opts(fmt_selector, clients)) as ydl:
+                opts = _opts(fmt_selector, clients)
+                _add_po_opts(opts)
+                with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                 if info:
                     break
@@ -526,7 +588,9 @@ def _do_download(url: str, format_id: str, ext: str, download_type: str,
             for clients in [["android"], ["ios"]]:
                 try:
                     _clean()
-                    with yt_dlp.YoutubeDL(_opts(fmt_selector, clients, use_cookies=True)) as ydl:
+                    opts = _opts(fmt_selector, clients, use_cookies=True)
+                    _add_po_opts(opts)
+                    with yt_dlp.YoutubeDL(opts) as ydl:
                         info = ydl.extract_info(url, download=True)
                     if info:
                         break
@@ -538,7 +602,9 @@ def _do_download(url: str, format_id: str, ext: str, download_type: str,
             for clients in ALL_CLIENTS:
                 try:
                     _clean()
-                    with yt_dlp.YoutubeDL(_opts("bestvideo+bestaudio/best", clients, use_cookies=bool(cookies_path))) as ydl:
+                    opts = _opts("bestvideo+bestaudio/best", clients, use_cookies=bool(cookies_path))
+                    _add_po_opts(opts)
+                    with yt_dlp.YoutubeDL(opts) as ydl:
                         info = ydl.extract_info(url, download=True)
                     if info:
                         break
@@ -698,11 +764,19 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
 
         # Run yt-dlp in thread pool to not block event loop
         def _run_download():
+            po_tokens = _get_po_tokens()
+            def _add_po(opts_dict):
+                if po_tokens.get("po_token") and po_tokens.get("visitor_data"):
+                    ea = opts_dict.setdefault("extractor_args", {"youtube": {}})
+                    ea["youtube"]["po_token"] = po_tokens["po_token"]
+                    ea["youtube"]["po_visitor_data"] = po_tokens["visitor_data"]
             # Layer 1: android without cookies (bypasses SABR)
             for clients in [["android"], ["ios"], ["web"], ["web_creator"]]:
                 try:
                     _clean()
-                    with yt_dlp.YoutubeDL(_opts(fmt_selector, clients)) as ydl:
+                    opts = _opts(fmt_selector, clients)
+                    _add_po(opts)
+                    with yt_dlp.YoutubeDL(opts) as ydl:
                         info = ydl.extract_info(url, download=True)
                     if info:
                         return info
@@ -713,7 +787,9 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
                 for clients in [["android"], ["ios"]]:
                     try:
                         _clean()
-                        with yt_dlp.YoutubeDL(_opts(fmt_selector, clients, use_cookies=True)) as ydl:
+                        opts = _opts(fmt_selector, clients, use_cookies=True)
+                        _add_po(opts)
+                        with yt_dlp.YoutubeDL(opts) as ydl:
                             info = ydl.extract_info(url, download=True)
                         if info:
                             return info
@@ -723,7 +799,9 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
             for clients in ALL_CLIENTS:
                 try:
                     _clean()
-                    with yt_dlp.YoutubeDL(_opts("bestvideo+bestaudio/best", clients, use_cookies=bool(cookies_path))) as ydl:
+                    opts = _opts("bestvideo+bestaudio/best", clients, use_cookies=bool(cookies_path))
+                    _add_po(opts)
+                    with yt_dlp.YoutubeDL(opts) as ydl:
                         info = ydl.extract_info(url, download=True)
                     if info:
                         return info
@@ -955,6 +1033,19 @@ async def cookie_status():
             pass
 
     return JSONResponse(result)
+
+
+@app.get("/api/pot-status")
+async def pot_status():
+    """Check PO token status."""
+    tokens = _get_po_tokens()
+    return JSONResponse({
+        "has_tokens": bool(tokens),
+        "status": tokens.get("status", "none"),
+        "generated_at": tokens.get("generated_at"),
+        "has_po_token": bool(tokens.get("po_token")),
+        "has_visitor_data": bool(tokens.get("visitor_data")),
+    })
 
 
 @app.post("/api/refresh-cookies")
