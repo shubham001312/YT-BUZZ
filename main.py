@@ -292,11 +292,12 @@ async def video_info(url: str):
         }
 
     # Run yt-dlp in thread pool to avoid blocking the event loop.
-    # Fast strategy: try web first, then android+cookies, don't try ALL clients.
+    # Fast strategy: try android first (bypasses SABR), then web clients.
     def _try_extract():
         nonlocal last_error
-        # Layer 1: web client (fastest, works for most public videos)
-        for clients in [["web"], ["mweb"]]:
+        # Layer 1: android client WITHOUT cookies (bypasses SABR/PO Token,
+        # works for public videos even on datacenter IPs)
+        for clients in [["android"], ["ios"], ["web"], ["web_creator"]]:
             try:
                 ydl_opts = {
                     "quiet": True,
@@ -310,12 +311,11 @@ async def video_info(url: str):
                     resp = _info_response(info)
                     if resp["formats"]:
                         return resp
-                # If we got info but no formats, track it as last_error
                 last_error = Exception(f"No formats available via {clients[0]} client")
             except Exception as e:
                 last_error = e
                 continue
-        # Layer 2: android client with cookies (bypasses SABR, age-restricted)
+        # Layer 2: cookies + android (for age-restricted content)
         if cookies_path:
             for clients in [["android"], ["ios"]]:
                 try:
@@ -491,8 +491,8 @@ def _do_download(url: str, format_id: str, ext: str, download_type: str,
         info = None
         job["progress"] = "Downloading..."
 
-        # Layer 1: web client (fastest for public videos)
-        for clients in [["web"], ["mweb"]]:
+        # Layer 1: android without cookies (bypasses SABR, works for public videos)
+        for clients in [["android"], ["ios"], ["web"], ["web_creator"]]:
             try:
                 _clean()
                 with yt_dlp.YoutubeDL(_opts(fmt_selector, clients)) as ydl:
@@ -502,7 +502,7 @@ def _do_download(url: str, format_id: str, ext: str, download_type: str,
             except Exception:
                 continue
 
-        # Layer 2: android+cookies (SABR/age-restricted bypass)
+        # Layer 2: android+cookies (age-restricted bypass)
         if info is None and cookies_path:
             for clients in [["android"], ["ios"]]:
                 try:
@@ -679,8 +679,8 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
 
         # Run yt-dlp in thread pool to not block event loop
         def _run_download():
-            # Layer 1: web client (fastest)
-            for clients in [["web"], ["mweb"]]:
+            # Layer 1: android without cookies (bypasses SABR)
+            for clients in [["android"], ["ios"], ["web"], ["web_creator"]]:
                 try:
                     _clean()
                     with yt_dlp.YoutubeDL(_opts(fmt_selector, clients)) as ydl:
@@ -689,7 +689,7 @@ async def download_video(url: str, format_id: str, ext: str = "mp4", download_ty
                         return info
                 except Exception:
                     continue
-            # Layer 2: android+cookies (SABR/age-restricted)
+            # Layer 2: android+cookies (age-restricted)
             if cookies_path:
                 for clients in [["android"], ["ios"]]:
                     try:
