@@ -424,12 +424,14 @@ async def video_info(url: str):
     error_msg = str(last_error or "Unknown error")
     if "Video unavailable" in error_msg or "Private video" in error_msg:
         error_msg = "This video is unavailable, private, or has been removed."
-    elif "Sign in" in error_msg or "confirm your age" in error_msg or "age" in error_msg.lower():
+    elif "confirm your age" in error_msg:
         error_msg = "This video is age-restricted and requires YouTube login to access."
     elif "Signature extraction failed" in error_msg:
         error_msg = "This video uses a protection that yt-dlp cannot currently bypass."
+    elif "no longer supported" in error_msg:
+        error_msg = "YouTube API changed. The server needs a yt-dlp update."
     else:
-        error_msg = error_msg[:200]
+        error_msg = error_msg[:300]
     raise HTTPException(status_code=400, detail=f"Could not fetch video info: {error_msg}")
 
 
