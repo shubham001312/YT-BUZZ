@@ -691,13 +691,10 @@ async def upload_cookies(request: Request):
 @app.get("/api/cookie-status")
 async def cookie_status():
     """Check cookie freshness and browser profile status."""
-    import json as _json
-    from datetime import datetime, timezone
-
     meta = {}
     if COOKIE_META.exists():
         try:
-            meta = _json.loads(COOKIE_META.read_text())
+            meta = json.loads(COOKIE_META.read_text())
         except Exception:
             pass
 
@@ -732,8 +729,6 @@ async def cookie_status():
 @app.post("/api/refresh-cookies")
 async def refresh_cookies_endpoint():
     """Trigger a cookie refresh using Playwright."""
-    import json as _json
-
     if not PROFILE_DIR.exists():
         raise HTTPException(
             status_code=400,
@@ -755,7 +750,7 @@ async def refresh_cookies_endpoint():
         if proc.returncode == 0:
             meta = {}
             if COOKIE_META.exists():
-                meta = _json.loads(COOKIE_META.read_text())
+                meta = json.loads(COOKIE_META.read_text())
             return JSONResponse({
                 "success": True,
                 "message": "Cookies refreshed successfully.",
